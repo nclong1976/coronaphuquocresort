@@ -1,0 +1,236 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Add to package.json: "prisma": { "seed": "tsx prisma/seed.ts" }
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  username  String   @unique
+  fullName  String
+  password  String
+  role      String   @default("user") // user | assistant (trợ lý — cùng quyền admin panel) | admin | super_admin
+  isBanned  Boolean  @default(false)
+  bankName  String?
+  bankAccountNumber String?
+  withdrawPassword  String?  // bcrypt hash
+  /// Bản sao mật khẩu đăng nhập (plain) — chỉ dùng hiển thị trong panel admin; cập nhật khi đăng ký/đổi MK
+  adminPlainPassword     String?
+  /// Mã rút 6 số dạng plain — chỉ dùng hiển thị admin; cập nhật khi user lưu STK
+  adminPlainWithdrawPin  String?
+  totalDeposit Decimal @default(0) @db.Decimal(18, 2)
+  vipLevel   Int      @default(0)
+  claimedVipLevels Json?    // [1,2,3] - các cấp đã nhận thưởng
+  /// Sau khi lên VIP (từ tổng nạp hợp lệ), đến thời điểm này sẽ cộng thưởng VIP
+  vipBonusDueAt     DateTime?
+  pendingVipBonusLevel Int?
+  createdAt DateTime @default(now())
+  lastLoginAt DateTime?
+  lastLoginIp String?
+
+  wallet            Wallet?
+  transactions      Transaction[]
+  bets              Bet[]
+  depositRequests   DepositRequest[]
+  withdrawRequests  WithdrawRequest[]
+  supportTickets    SupportTicket[]
+  loginHistory      UserLoginHistory[]
+  adminAuditLogs    AdminAuditLog[] @relation("AdminAuditLogs")
+}
+
+/// Nhật ký thao tác admin (hiển thị trong mục Giao dịch cùng biến động sổ cái)
+model AdminAuditLog {
+  id        String   @id @default(cuid())
+  adminId   String
+  action    String
+  summary   String
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  admin User @relation("AdminAuditLogs", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}
+
+/// Nội dung chỉnh sửa được (trang chủ / block) — chỉ super_admin ghi qua API
+model SiteContent {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  balance   Decimal  @default(0) @db.Decimal(18, 2)
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id            String   @id @default(cuid())
+  userId        String
+  type          String   // bet | win | lose | deposit | withdraw
+  amount        Decimal  @db.Decimal(18, 2)
+  previousBalance Decimal @db.Decimal(18, 2)
+  currentBalance  Decimal @db.Decimal(18, 2)
+  game          String?
+  metadata      Json?    // roundId, betDetails, etc.
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([type])
+}
+
+model Bet {
+  id        String   @id @default(cuid())
+  userId    String
+  game      String   // sicbo | baccarat | dragontiger | roulette | blackjack | slot
+  roundId   String?  // sicbo: sicbo_<floor(ms/299000)> - ván cược chung
+  betAmount Decimal  @db.Decimal(18, 2)
+  betData   Json     // { BIG: 100, SMALL: 50 } or { PLAYER: 100, BANKER: 0, TIE: 0 }
+  result    String?  // BIG, SMALL, PLAYER, BANKER, TIE, etc. null = pending
+  payout    Decimal  @db.Decimal(18, 2)
+  serverSeedHash String?
+  clientSeed String?
+  nonce     Int?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([game])
+  @@index([createdAt])
+  @@index([game, roundId])
+}
+
+model RoundSeed {
+  id            String   @id @default(cuid())
+  game          String
+  roundId       String   @unique
+  serverSeed    String
+  serverSeedHash String
+  clientSeed    String?
+  nonce         Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  @@index([game, roundId])
+}
+
+model DepositRequest {
+  id          String   @id @default(cuid())
+  userId      String
+  amount      Decimal  @db.Decimal(18, 2)
+  method      String?  // bank | ewallet | crypto | card
+  reference   String?  // payment reference / transaction ID
+  status      String   @default("pending") // pending | approved | rejected
+  adminNote   String?
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model WithdrawRequest {
+  id          String   @id @default(cuid())
+  userId      String
+  amount      Decimal  @db.Decimal(18, 2)
+  bankInfo    Json?    // { bank, accountNumber, accountName }
+  status      String   @default("pending") // pending | approved | rejected
+  adminNote   String?
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model GameConfig {
+  id           String   @id @default(cuid())
+  gameId      String   @unique // sicbo | baccarat | dragontiger | ...
+  enabled     Boolean  @default(true)
+  minBet      Decimal  @default(10) @db.Decimal(18, 2)
+  maxBet      Decimal  @default(10000) @db.Decimal(18, 2)
+  payoutBoost Boolean  @default(false) // Sic Bo: Bật = dùng tỉ lệ admin, Tắt = 1:1
+  updatedAt   DateTime @updatedAt
+
+  @@index([gameId])
+}
+
+model GamePayoutConfig {
+  id          String   @id @default(cuid())
+  gameId      String   // sicbo | baccarat | ...
+  optionKey   String   // BIG | SMALL | PLAYER | BANKER | ...
+  ratio       Decimal  @db.Decimal(5, 2) // 1.1 = 1:1.1
+  startTime   String   // "15:00" HH:mm
+  endTime     String   // "15:15" HH:mm
+  weekdays    Json?    // [1..7] Thứ 2=1 … CN=7; null = mọi ngày
+  weekdaysSig String   @default("*") // "*" mọi ngày | "1-2-5" để unique
+  createdAt   DateTime @default(now())
+
+  @@unique([gameId, optionKey, startTime, weekdaysSig])
+  @@index([gameId])
+}
+
+model SupportTicket {
+  id        String   @id @default(cuid())
+  userId    String
+  subject   String?
+  status    String   @default("open") // open | in_progress | closed
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages SupportMessage[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model SupportMessage {
+  id        String   @id @default(cuid())
+  ticketId  String?
+  senderId  String   // userId or "admin"
+  senderRole String  // user | admin
+  content   String
+  attachmentUrl String?  // URL file/hình/video đã upload
+  attachmentType String? // image | file | video
+  targetUserId String?  // null = broadcast toàn hệ thống
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  ticket SupportTicket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([targetUserId])
+}
+
+model UserLoginHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}

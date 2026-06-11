@@ -25,7 +25,8 @@ export async function login(email: string, password: string) {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
-  if ((res.user as any).role !== 'admin') throw new Error('Admin access required');
+  const role = (res.user as any).role;
+  if (role !== 'admin' && role !== 'super_admin') throw new Error('Admin access required');
   localStorage.setItem('admin_token', res.token);
   return res;
 }
@@ -133,5 +134,24 @@ export const adminApi = {
     api<{ message: import('../types').SupportMessage }>('/api/support/message', {
       method: 'POST',
       body: JSON.stringify({ ticketId, content }),
+    }),
+  markTicketAsRead: (ticketId: string) =>
+    api<{ success: boolean }>(`/api/support/tickets/${ticketId}/read`, {
+      method: 'POST',
+    }),
+  me: () =>
+    api<{ user: { id: string; email: string; username: string; fullName: string; role: string } }>('/api/auth/me'),
+  deleteTicket: (ticketId: string) =>
+    api<{ success: boolean }>(`/api/support/tickets/${ticketId}`, {
+      method: 'DELETE',
+    }),
+  deleteMessage: (messageId: string) =>
+    api<{ success: boolean }>(`/api/support/messages/${messageId}`, {
+      method: 'DELETE',
+    }),
+  toggleHideTicket: (ticketId: string, isHidden: boolean) =>
+    api<{ success: boolean; isHidden: boolean }>(`/api/support/tickets/${ticketId}/toggle-hide`, {
+      method: 'POST',
+      body: JSON.stringify({ isHidden }),
     }),
 };

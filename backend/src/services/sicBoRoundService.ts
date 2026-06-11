@@ -12,11 +12,12 @@ import { hashServerSeed } from '../rng/provablyFair.js';
 import { playSicBo } from '../engine/sicBoEngine.js';
 import { isGameEnabled, getGameLimits } from './gameConfigService.js';
 import { getSicBoPayoutSnapshot } from './payoutConfigService.js';
+import { getSocketIo } from './socketHub.js';
 
 const prisma = new PrismaClient();
 
-const CYCLE_MS = 299_000; // 4:59
-const BETTING_END_MS = 297_000; // 0:02 còn lại khóa cược
+const CYCLE_MS = 299_000; // 5 minutes per round
+const BETTING_END_MS = 289_000; // 4 minutes 49 seconds betting, 10 seconds reveal/shake
 
 function getCurrentRoundId(): string {
   return `sicbo_${Math.floor(Date.now() / CYCLE_MS)}`;
@@ -92,7 +93,8 @@ export async function placeSicBoBet(userId: string, bets: { BIG?: number; SMALL?
 
   const round = await getOrCreateRoundSeed(roundId, clientSeed);
 
-  const sicSnapPlace = await getSicBoPayoutSnapshot();
+  const roundNum = getRoundNum(roundId);
+  const sicSnapPlace = await getSicBoPayoutSnapshot(new Date(roundNum * CYCLE_MS + 10000));
   const ratioBIG = sicSnapPlace.BIG;
   const ratioSMALL = sicSnapPlace.SMALL;
 
@@ -155,98 +157,107 @@ export async function getSicBoRoundResult(userId: string, roundId: string) {
     where: { game: 'sicbo', roundId, result: null },
   });
 
-  if (allPending.length === 0) {
-    const balance = await getBalance(userId);
-    const roundResult = playSicBo({ BIG: 0, SMALL: 0 }, round.serverSeed, round.clientSeed ?? '', round.nonce);
-    return {
-      status: 'resolved',
-      roundId,
-      dice: roundResult.dice,
-      sum: roundResult.sum,
-      result: roundResult.result,
-      winAmount: 0,
-      balance,
-      serverSeedHash: round.serverSeedHash,
-    };
-  }
-
   const result = playSicBo({ BIG: 0, SMALL: 0 }, round.serverSeed, round.clientSeed ?? '', round.nonce);
 
-  const sicSnap = await getSicBoPayoutSnapshot();
+  const sicSnap = await getSicBoPayoutSnapshot(new Date(roundNum * CYCLE_MS + 10000));
   const fallbackRatioBig = sicSnap.BIG;
   const fallbackRatioSmall = sicSnap.SMALL;
 
   const winsByUser = new Map<string, number>();
 
-  /**
-   * Settlement: Logic cập nhật ví sau ván đấu (Arbitrage-friendly)
-   *
-   * - Tài (BIG) thắng: winAmount = calculatePayout(taiBet, odds) → cộng vào ví
-   * - Xỉu (SMALL) thắng: winAmount = calculatePayout(xiuBet, odds) → cộng vào ví
-   * - Cửa thua: đã bị trừ tiền lúc đặt lệnh, không cần xử lý thêm
-   *
-   * Ví dụ: taiBet=100000, xiuBet=100000, odds=2.1, kết quả Tài:
-   *   - Tài thắng: winAmount = 100000 * 2.1 = 210000 → updateUserBalance(userId, 210000)
-   *   - Xỉu đã bị trừ lúc đặt, không xử lý thêm
-   */
-  await prisma.$transaction(async (tx) => {
-    for (const bet of allPending) {
-      const b = bet.betData as { BIG?: number; SMALL?: number; ratioBIG?: number; ratioSMALL?: number };
-      const taiBet = parseBetAmount(b?.BIG);
-      const xiuBet = parseBetAmount(b?.SMALL);
-      const oddsBIG = b?.ratioBIG ?? fallbackRatioBig;
-      const oddsSMALL = b?.ratioSMALL ?? fallbackRatioSmall;
-      const totalBet = taiBet + xiuBet;
+  if (allPending.length > 0) {
+    await prisma.$transaction(async (tx) => {
+      for (const bet of allPending) {
+        const b = bet.betData as { BIG?: number; SMALL?: number; ratioBIG?: number; ratioSMALL?: number };
+        const taiBet = parseBetAmount(b?.BIG);
+        const xiuBet = parseBetAmount(b?.SMALL);
+        const oddsBIG = b?.ratioBIG ?? fallbackRatioBig;
+        const oddsSMALL = b?.ratioSMALL ?? fallbackRatioSmall;
+        const totalBet = taiBet + xiuBet;
 
-      const hasBoth = taiBet > 0 && xiuBet > 0;
+        const hasBoth = taiBet > 0 && xiuBet > 0;
 
-      let winAmount = 0;
-      let lossAmount = 0;
+        let winAmount = 0;
+        let lossAmount = 0;
 
-      if (result.result === 'BIG') {
-        if (taiBet > 0) winAmount = calculatePayout(taiBet, oddsBIG);
-        if (xiuBet > 0) lossAmount = xiuBet;
-      } else {
-        if (xiuBet > 0) winAmount = calculatePayout(xiuBet, oddsSMALL);
-        if (taiBet > 0) lossAmount = taiBet;
-      }
+        if (result.result === 'BIG') {
+          if (taiBet > 0) winAmount = calculatePayout(taiBet, oddsBIG);
+          if (xiuBet > 0) lossAmount = xiuBet;
+        } else {
+          if (xiuBet > 0) winAmount = calculatePayout(xiuBet, oddsSMALL);
+          if (taiBet > 0) lossAmount = taiBet;
+        }
 
-      const grossWin = winAmount;
-      const netPayout = grossWin - totalBet;
+        const grossWin = winAmount;
+        const netPayout = grossWin - totalBet;
 
-      winsByUser.set(bet.userId, (winsByUser.get(bet.userId) ?? 0) + grossWin);
+        winsByUser.set(bet.userId, (winsByUser.get(bet.userId) ?? 0) + grossWin);
 
-      await tx.bet.update({
-        where: { id: bet.id },
-        data: { result: result.result, payout: netPayout },
-      });
-
-      if (grossWin > 0) {
-        const wallet = await tx.wallet.findUnique({ where: { userId: bet.userId } });
-        const balanceBefore = wallet ? Number(wallet.balance) : 0;
-        const entry = await executeLedgerEntryInTx(tx as TxClient, {
-          userId: bet.userId,
-          type: 'win',
-          amount: grossWin,
-          game: 'sicbo',
-          metadata: {
-            roundId,
-            result: result.result,
-            dice: result.dice,
-            hasBothTaiXiu: hasBoth,
-            winAmount: grossWin,
-            lossAmount,
-            balance_before: balanceBefore,
-            balance_after: balanceBefore + grossWin,
-          },
+        await tx.bet.update({
+          where: { id: bet.id },
+          data: { result: result.result, payout: netPayout },
         });
-        if (!entry.success) throw new Error(entry.error ?? 'Settlement failed');
+
+        if (grossWin > 0) {
+          const wallet = await tx.wallet.findUnique({ where: { userId: bet.userId } });
+          const balanceBefore = wallet ? Number(wallet.balance) : 0;
+          const entry = await executeLedgerEntryInTx(tx as TxClient, {
+            userId: bet.userId,
+            type: 'win',
+            amount: grossWin,
+            game: 'sicbo',
+            metadata: {
+              roundId,
+              result: result.result,
+              dice: result.dice,
+              hasBothTaiXiu: hasBoth,
+              winAmount: grossWin,
+              lossAmount,
+              balance_before: balanceBefore,
+              balance_after: balanceBefore + grossWin,
+            },
+          });
+          if (!entry.success) throw new Error(entry.error ?? 'Settlement failed');
+        }
+      }
+    });
+
+    // Phát tín hiệu số dư mới cho toàn bộ người chơi tham gia ván đấu này
+    const io = getSocketIo();
+    if (io) {
+      for (const [uid, gw] of winsByUser.entries()) {
+        if (gw > 0) {
+          getBalance(uid).then((bal) => {
+            io.to(`user:${uid}`).emit('balance_updated', {
+              balance: bal,
+              type: 'win',
+              amount: gw,
+              game: 'sicbo',
+            });
+          }).catch(() => {});
+        }
       }
     }
+  }
+
+  // Luôn tìm các cược của chính user này trong ván đó (để biết winAmount thực tế của user)
+  const userBets = await prisma.bet.findMany({
+    where: { userId, game: 'sicbo', roundId },
   });
 
+  let winAmount = 0;
+  for (const bet of userBets) {
+    if (bet.result !== null) {
+      const betVal = Number(bet.betAmount);
+      const payVal = Number(bet.payout);
+      const gross = payVal + betVal;
+      if (gross > 0) {
+        winAmount += gross;
+      }
+    }
+  }
+
   const balance = await getBalance(userId);
-  const winAmount = winsByUser.get(userId) ?? 0;
 
   return {
     status: 'resolved',

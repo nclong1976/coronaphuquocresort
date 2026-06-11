@@ -71,7 +71,6 @@ import { usePlayerNotifications } from './context/PlayerNotificationsContext';
 import { useGameCatalog } from './hooks/useGameCatalog';
 import { useStore } from './store/useStore';
 import { walletApi } from './api/client';
-import { Analytics } from '@vercel/analytics/react';
 
 // --- Nội dung Trang cá nhân (super admin leo1102 được sửa) ---
 const PROFILE_MESSAGE_STORAGE_KEY = 'corona_profile_poem_v1';
@@ -2391,7 +2390,6 @@ export default function App() {
           </div>
         )}
       </div>
-      <Analytics />
     </div>
   );
 }

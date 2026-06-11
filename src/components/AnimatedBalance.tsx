@@ -36,7 +36,7 @@ export function AnimatedBalance({
 
   useEffect(() => {
     if (prevBalance.current !== balance) {
-      animateValue(prevBalance.current, balance, 600, setDisplayValue, easeOutCubic);
+      animateValue(prevBalance.current, balance, 500, setDisplayValue, easeOutCubic);
       prevBalance.current = balance;
     } else {
       setDisplayValue(balance);

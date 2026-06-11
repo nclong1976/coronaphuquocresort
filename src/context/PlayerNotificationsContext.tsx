@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppSocket } from './SocketContext';
 import { useAuth } from './AuthContext';
 
@@ -18,8 +18,12 @@ export type PlayerNotice = {
 export type PlayerNotificationsContextValue = {
   notices: PlayerNotice[];
   unreadCount: number;
+  /** Unread messages from admin in direct support chat (not broadcasts) */
+  unreadSupportCount: number;
   markNoticesSeen: () => void;
   pushSystemNotice: (content: string) => void;
+  /** Call with true when player opens the support chat, false when closing */
+  setSupportChatOpen: (open: boolean) => void;
 };
 
 const PlayerNotificationsContext = createContext<PlayerNotificationsContextValue | null>(null);
@@ -48,6 +52,22 @@ export function PlayerNotificationsProvider({ children }: { children: React.Reac
   const { token } = useAuth();
   const [notices, setNotices] = useState<PlayerNotice[]>(loadStored);
   const [seenAt, setSeenAt] = useState(() => sessionStorage.getItem(SEEN_KEY) ?? '');
+  const [unreadSupportCount, setUnreadSupportCount] = useState(0);
+  const supportChatOpenRef = useRef(false);
+
+  const setSupportChatOpen = useCallback((open: boolean) => {
+    supportChatOpenRef.current = open;
+    if (open) {
+      setUnreadSupportCount(0);
+    }
+  }, []);
+
+  // Reset unread support count when user logs out
+  useEffect(() => {
+    if (!token) {
+      setUnreadSupportCount(0);
+    }
+  }, [token]);
 
   const append = useCallback((row: Omit<PlayerNotice, 'id' | 'at'> & { at?: string }) => {
     const item: PlayerNotice = {
@@ -106,13 +126,54 @@ export function PlayerNotificationsProvider({ children }: { children: React.Reac
         typeof d?.amount === 'number' && d.amount > 0 ? `${base} (+$${d.amount.toLocaleString()})` : base;
       append({ content: msg, source: 'system' });
     };
+
+    /** Listen for direct admin support_message replies – increment unread badge if chat is closed */
+    const onSupportMessage = (payload: {
+      ticketId: string;
+      message: { id: string; content: string; senderRole: string; createdAt: string; attachmentUrl?: string | null };
+    }) => {
+      if (payload.message.senderRole !== 'admin') return;
+      if (!supportChatOpenRef.current) {
+        setUnreadSupportCount((n) => n + 1);
+      }
+    };
+
+    const onBalanceUpdated = (d: { balance: number; type?: string; amount?: number; game?: string }) => {
+      if (d.type === 'win' && d.amount && d.amount > 0) {
+        const gameNamesMap: Record<string, string> = {
+          sicbo: 'Sic Bo',
+          baccarat: 'Baccarat',
+          tigerbaccarat: 'Tiger Baccarat',
+          dragontiger: 'Dragon Tiger',
+          roulette: 'Roulette',
+          blackjack: 'Blackjack',
+          slot: 'Slot Machine',
+          baicao: 'Bài Cào',
+          threecard: 'Three Card Poker',
+          caribbean: 'Caribbean Stud',
+          niuniu: 'Niu Niu',
+          texasholdem: "Texas Hold'em",
+          russianpoker: 'Russian Poker',
+        };
+        const gName = gameNamesMap[d.game || ''] || d.game || 'Trò chơi';
+        append({
+          content: `Chúc mừng! Bạn đã thắng +$${d.amount.toLocaleString()} tại game ${gName}!`,
+          source: 'system',
+        });
+      }
+    };
+
     socket.on('admin_broadcast', onBroadcast);
     socket.on('admin_direct', onDirect);
     socket.on('vip_bonus_credited', onVipBonus);
+    socket.on('support_message', onSupportMessage);
+    socket.on('balance_updated', onBalanceUpdated);
     return () => {
       socket.off('admin_broadcast', onBroadcast);
       socket.off('admin_direct', onDirect);
       socket.off('vip_bonus_credited', onVipBonus);
+      socket.off('support_message', onSupportMessage);
+      socket.off('balance_updated', onBalanceUpdated);
     };
   }, [socket, token, append]);
 
@@ -139,8 +200,8 @@ export function PlayerNotificationsProvider({ children }: { children: React.Reac
   }, [notices, seenAt]);
 
   const value = useMemo(
-    () => ({ notices, unreadCount, markNoticesSeen, pushSystemNotice }),
-    [notices, unreadCount, markNoticesSeen, pushSystemNotice]
+    () => ({ notices, unreadCount, unreadSupportCount, markNoticesSeen, pushSystemNotice, setSupportChatOpen }),
+    [notices, unreadCount, unreadSupportCount, markNoticesSeen, pushSystemNotice, setSupportChatOpen]
   );
 
   return <PlayerNotificationsContext.Provider value={value}>{children}</PlayerNotificationsContext.Provider>;
@@ -149,7 +210,7 @@ export function PlayerNotificationsProvider({ children }: { children: React.Reac
 export function usePlayerNotifications(): PlayerNotificationsContextValue {
   const ctx = useContext(PlayerNotificationsContext);
   if (!ctx) {
-    return { notices: [], unreadCount: 0, markNoticesSeen: () => {}, pushSystemNotice: () => {} };
+    return { notices: [], unreadCount: 0, unreadSupportCount: 0, markNoticesSeen: () => {}, pushSystemNotice: () => {}, setSupportChatOpen: () => {} };
   }
   return ctx;
 }

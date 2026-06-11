@@ -14,7 +14,7 @@ export function useSocket() {
 
     const s = io(SOCKET_URL, {
       auth: { token },
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
     });
 
     s.on('connect', () => setConnected(true));

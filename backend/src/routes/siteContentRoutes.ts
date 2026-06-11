@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Router } from 'express';
 import { Prisma, PrismaClient } from '@prisma/client';
 

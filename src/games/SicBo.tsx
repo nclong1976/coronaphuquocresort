@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ArrowLeft, Wallet, History as HistoryIcon } from 'lucide-react';
+import { ArrowLeft, Wallet, History as HistoryIcon, RotateCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useGameBalance } from '../hooks/useGameBalance';
 import { useBalanceUpdate } from '../hooks/useBalanceUpdate';
 import { useWallet } from '../context/WalletContext';
+import { LuxuryWalletBar } from '../components/LuxuryWalletBar';
 import { SICBO_CONFIG } from '../config/sicboConfig';
 import confetti from 'canvas-confetti';
 
@@ -13,6 +14,7 @@ const CHIPS = [
   { val: '100', amount: 100, className: 'border-4 border-[#d4af37] border-double gold-gradient text-slate-900 font-black shadow-xl' },
   { val: '500', amount: 500, className: 'border-4 border-white border-double bg-purple-600 text-white font-black' },
   { val: '1K', amount: 1000, className: 'border-4 border-white border-double bg-red-600 text-white font-black' },
+  { val: '50%', amount: 0, className: 'border-4 border-emerald-500 border-double bg-gradient-to-br from-emerald-500 to-emerald-900 text-white font-black shadow-xl', isPercent50: true },
 ];
 
 const CYCLE_TIME = SICBO_CONFIG.cycleTime;
@@ -59,7 +61,16 @@ export function SicBo({ onBack }: { onBack: () => void }) {
   const [selectedChip, setSelectedChip] = useState(CHIPS[0]);
   const [tempBets, setTempBets] = useState<{ BIG: number, SMALL: number }>({ BIG: 0, SMALL: 0 });
   const [confirmedBets, setConfirmedBets] = useState<{ BIG: number, SMALL: number }>({ BIG: 0, SMALL: 0 });
-  const [selectedZones, setSelectedZones] = useState<('BIG' | 'SMALL')[]>([]);
+  const [selectedZones, setSelectedZones] = useState<{ BIG: boolean; SMALL: boolean }>({ BIG: false, SMALL: false });
+  const [isSyncingBalance, setIsSyncingBalance] = useState(false);
+  const handleRefreshBalance = useCallback(async () => {
+    if (isSyncingBalance) return;
+    setIsSyncingBalance(true);
+    try {
+      await syncBalance();
+    } catch {}
+    setTimeout(() => setIsSyncingBalance(false), 600);
+  }, [isSyncingBalance, syncBalance]);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [customBetAmount, setCustomBetAmount] = useState('');
@@ -78,16 +89,49 @@ export function SicBo({ onBack }: { onBack: () => void }) {
 
   const requestRef = useRef<number>();
 
-  const settleBets = useCallback((d1: number, d2: number, d3: number, currentBets: { BIG: number, SMALL: number }) => {
+  const checkLocalGoldenHour = useCallback((now: number = Date.now()): { active: boolean; startTime: string; endTime: string } => {
+    const currentRoundNum = Math.floor(now / CYCLE_TIME);
+    const roundStartMs = currentRoundNum * CYCLE_TIME;
+    const roundEndMs = roundStartMs + CYCLE_TIME;
+    
+    const roundStart = new Date(roundStartMs);
+    const roundEnd = new Date(roundEndMs);
+    
+    const year = roundStart.getFullYear();
+    const month = roundStart.getMonth();
+    const date = roundStart.getDate();
+    
+    const ca1Start = new Date(year, month, date, 15, 0, 0, 0);
+    const ca1End = new Date(year, month, date, 15, 15, 0, 0);
+    
+    const ca2Start = new Date(year, month, date, 20, 0, 0, 0);
+    const ca2End = new Date(year, month, date, 20, 15, 0, 0);
+    
+    const isCa1 = roundStart.getTime() >= ca1Start.getTime() && roundEnd.getTime() <= ca1End.getTime();
+    const isCa2 = roundStart.getTime() >= ca2Start.getTime() && roundEnd.getTime() <= ca2End.getTime();
+    
+    if (isCa1) {
+      return { active: true, startTime: '15:00', endTime: '15:15' };
+    } else if (isCa2) {
+      return { active: true, startTime: '20:00', endTime: '20:15' };
+    }
+    return { active: false, startTime: '', endTime: '' };
+  }, []);
+
+  const settleBets = useCallback((d1: number, d2: number, d3: number, currentBets: { BIG: number, SMALL: number }, targetRoundId: number) => {
     const sum = d1 + d2 + d3;
     const res: 'BIG' | 'SMALL' = sum >= 11 ? 'BIG' : 'SMALL';
 
+    const roundStartMs = targetRoundId * CYCLE_TIME;
+    const isGolden = checkLocalGoldenHour(roundStartMs).active;
+    const odds = isGolden ? 2.1 : 2;
+
     let winAmount = 0;
-    if (res === 'BIG' && currentBets.BIG > 0) winAmount += currentBets.BIG * 2;
-    if (res === 'SMALL' && currentBets.SMALL > 0) winAmount += currentBets.SMALL * 2;
+    if (res === 'BIG' && currentBets.BIG > 0) winAmount += currentBets.BIG * odds;
+    if (res === 'SMALL' && currentBets.SMALL > 0) winAmount += currentBets.SMALL * odds;
 
     return { winAmount, res, sum };
-  }, []);
+  }, [checkLocalGoldenHour]);
 
   const updateGameState = useCallback(() => {
     const now = Date.now();
@@ -101,7 +145,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
       setTempBets({ BIG: 0, SMALL: 0 });
       setConfirmedBets({ BIG: 0, SMALL: 0 });
       setIsConfirmed(false);
-      setSelectedZones([]);
+      setSelectedZones({ BIG: false, SMALL: false });
       setResult(null);
       setLidVisible(true);
       setDiceVisible(false);
@@ -122,7 +166,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
         setDice([d1, d2, d3]);
 
         if (isConfirmed) {
-          const { winAmount, res, sum } = settleBets(d1, d2, d3, confirmedBets);
+          const { winAmount, res, sum } = settleBets(d1, d2, d3, confirmedBets, roundId);
           setResult(res);
           setHistory(prev => [res, ...prev].slice(0, 50));
 
@@ -134,11 +178,14 @@ export function SicBo({ onBack }: { onBack: () => void }) {
           if (confirmedBets.BIG > 0 || confirmedBets.SMALL > 0) {
             const newHistoryEntries: { time: string; zone: string; amount: number; result: string; payout: number }[] = [];
             const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+            const roundStartMs = roundId * CYCLE_TIME;
+            const isGolden = checkLocalGoldenHour(roundStartMs).active;
+            const odds = isGolden ? 2.1 : 2;
             if (confirmedBets.BIG > 0) {
-              newHistoryEntries.push({ time: timeStr, zone: 'TÀI', amount: confirmedBets.BIG, result: res === 'BIG' ? 'THẮNG' : 'THUA', payout: res === 'BIG' ? confirmedBets.BIG * 2 : 0 });
+              newHistoryEntries.push({ time: timeStr, zone: 'TÀI', amount: confirmedBets.BIG, result: res === 'BIG' ? 'THẮNG' : 'THUA', payout: res === 'BIG' ? confirmedBets.BIG * odds : 0 });
             }
             if (confirmedBets.SMALL > 0) {
-              newHistoryEntries.push({ time: timeStr, zone: 'XỈU', amount: confirmedBets.SMALL, result: res === 'SMALL' ? 'THẮNG' : 'THUA', payout: res === 'SMALL' ? confirmedBets.SMALL * 2 : 0 });
+              newHistoryEntries.push({ time: timeStr, zone: 'XỈU', amount: confirmedBets.SMALL, result: res === 'SMALL' ? 'THẮNG' : 'THUA', payout: res === 'SMALL' ? confirmedBets.SMALL * odds : 0 });
             }
             setBetHistoryList(prev => [...newHistoryEntries, ...prev].slice(0, 50));
           }
@@ -148,7 +195,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
           // Cập nhật số dư thực từ server sau khi kết toán
           setTimeout(() => syncBalance(), 1500);
         } else {
-          const { res } = settleBets(d1, d2, d3, { BIG: 0, SMALL: 0 });
+          const { res } = settleBets(d1, d2, d3, { BIG: 0, SMALL: 0 }, roundId);
           setResult(res);
           setHistory(prev => [res, ...prev].slice(0, 50));
         }
@@ -162,7 +209,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
     }
 
     requestRef.current = requestAnimationFrame(updateGameState);
-  }, [roundId, gameState, isConfirmed, confirmedBets, updateBalance, settleBets]);
+  }, [roundId, gameState, isConfirmed, confirmedBets, updateBalance, settleBets, checkLocalGoldenHour, syncBalance]);
 
   useEffect(() => {
     // Check missed games
@@ -177,7 +224,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
           const d2 = Math.floor(Math.random() * 6) + 1;
           const d3 = Math.floor(Math.random() * 6) + 1;
           
-          const { winAmount, res, sum } = settleBets(d1, d2, d3, betData.bets);
+          const { winAmount, res, sum } = settleBets(d1, d2, d3, betData.bets, betData.roundId);
           
           const totalBet = betData.bets.BIG + betData.bets.SMALL;
           const net = winAmount - totalBet;
@@ -205,60 +252,77 @@ export function SicBo({ onBack }: { onBack: () => void }) {
 
   const handleZoneSelect = (zone: 'BIG' | 'SMALL') => {
     if (gameState !== 'betting' || isConfirmed) return;
-    const isSelected = selectedZones.includes(zone);
-    if (isSelected) {
-      setTempBets(prev => ({ ...prev, [zone]: 0 }));
-      setSelectedZones(prev => prev.filter(z => z !== zone));
-    } else if (SICBO_CONFIG.allowMultipleZones && selectedZones.length < SICBO_CONFIG.maxZonesPerBet) {
-      setSelectedZones(prev => [...prev, zone]);
-    } else if (!SICBO_CONFIG.allowMultipleZones) {
-      setTempBets({ BIG: 0, SMALL: 0 });
-      setSelectedZones([zone]);
-    }
+    setSelectedZones((prev) => {
+      const next = { ...prev, [zone]: !prev[zone] };
+      if (!next[zone]) {
+        setTempBets((b) => ({ ...b, [zone]: 0 }));
+      }
+      return next;
+    });
   };
 
   const handleChipClick = (chip: (typeof CHIPS)[0]) => {
     if (gameState !== 'betting' || isConfirmed) return;
-    if (selectedZones.length === 0) {
+    if (!selectedZones.BIG && !selectedZones.SMALL) {
       alert("Vui lòng chọn cửa đặt trước");
       return;
     }
-    const totalCost = chip.amount * selectedZones.length;
-    if (balance < tempBets.BIG + tempBets.SMALL + totalCost) {
+    setSelectedChip(chip);
+
+    if (chip.isPercent50) {
+      const half = Math.floor(balance / 2);
+      if (half <= 0) return;
+      setTempBets(prev => {
+        const next = { ...prev };
+        if (selectedZones.BIG) next.BIG = half;
+        if (selectedZones.SMALL) next.SMALL = half;
+        return next;
+      });
+      return;
+    }
+
+    const amount = chip.amount;
+    let count = 0;
+    if (selectedZones.BIG) count++;
+    if (selectedZones.SMALL) count++;
+    const needed = amount * count;
+    
+    if (balance < tempBets.BIG + tempBets.SMALL + needed) {
       alert("Số dư không đủ");
       return;
     }
-    setSelectedChip(chip);
     setTempBets(prev => {
-      const newBets = { ...prev };
-      selectedZones.forEach(z => {
-        newBets[z] += chip.amount;
-      });
-      return newBets;
+      const next = { ...prev };
+      if (selectedZones.BIG) next.BIG = (next.BIG || 0) + amount;
+      if (selectedZones.SMALL) next.SMALL = (next.SMALL || 0) + amount;
+      return next;
     });
   };
 
   const handleCustomBet = () => {
     if (gameState !== 'betting' || isConfirmed) return;
-    if (selectedZones.length === 0) {
+    if (!selectedZones.BIG && !selectedZones.SMALL) {
       alert("Vui lòng chọn cửa đặt trước");
       return;
     }
     const amount = parseInt(customBetAmount);
     if (isNaN(amount) || amount <= 0) return;
     
-    const totalCost = amount * selectedZones.length;
-    if (balance < tempBets.BIG + tempBets.SMALL + totalCost) {
+    let count = 0;
+    if (selectedZones.BIG) count++;
+    if (selectedZones.SMALL) count++;
+    const needed = amount * count;
+    
+    if (balance < tempBets.BIG + tempBets.SMALL + needed) {
       alert("Số dư không đủ");
       return;
     }
     
     setTempBets(prev => {
-      const newBets = { ...prev };
-      selectedZones.forEach(z => {
-        newBets[z] += amount;
-      });
-      return newBets;
+      const next = { ...prev };
+      if (selectedZones.BIG) next.BIG = (next.BIG || 0) + amount;
+      if (selectedZones.SMALL) next.SMALL = (next.SMALL || 0) + amount;
+      return next;
     });
     setCustomBetAmount('');
   };
@@ -295,7 +359,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
   const handleCancel = () => {
     if (gameState !== 'betting' || isConfirmed) return;
     setTempBets({ BIG: 0, SMALL: 0 });
-    setSelectedZones([]);
+    setSelectedZones({ BIG: false, SMALL: false });
   };
 
   const handleBack = () => {
@@ -305,8 +369,9 @@ export function SicBo({ onBack }: { onBack: () => void }) {
 
   const sum = dice[0] + dice[1] + dice[2];
 
-  const isBigActive = selectedZones.includes('BIG') || tempBets.BIG > 0 || confirmedBets.BIG > 0;
-  const isSmallActive = selectedZones.includes('SMALL') || tempBets.SMALL > 0 || confirmedBets.SMALL > 0;
+  const isBigActive = selectedZones.BIG || tempBets.BIG > 0 || confirmedBets.BIG > 0;
+  const isSmallActive = selectedZones.SMALL || tempBets.SMALL > 0 || confirmedBets.SMALL > 0;
+  const selectedCount = (selectedZones.BIG ? 1 : 0) + (selectedZones.SMALL ? 1 : 0);
 
   return (
     <div className={`relative flex h-auto min-h-screen w-full max-w-md mx-auto flex-col overflow-x-hidden bg-[#0c0806] transition-all duration-500 ${isExiting ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}`} style={{ fontFamily: "'Public Sans', sans-serif" }}>
@@ -319,10 +384,12 @@ export function SicBo({ onBack }: { onBack: () => void }) {
           <h2 className="text-[#d4af37] text-lg font-extrabold leading-tight tracking-wider uppercase">Sic Bo Luxury</h2>
           <span className="text-[10px] text-[#d4af37]/60 tracking-[0.2em]">TABLE #{roundId.toString().slice(-3)}</span>
         </div>
-        <div className="flex items-center gap-2 bg-gradient-to-r from-[#996515]/20 to-[#d4af37]/20 px-3 py-1.5 rounded-full border border-[#d4af37]/30">
-          <Wallet className="text-[#d4af37] size-4" />
-          <p className="text-[#f9e498] text-sm font-bold leading-normal tracking-wide">${(balance - (tempBets.BIG + tempBets.SMALL - confirmedBets.BIG - confirmedBets.SMALL)).toLocaleString()}</p>
-        </div>
+        <LuxuryWalletBar
+          balance={balance - (tempBets.BIG + tempBets.SMALL - confirmedBets.BIG - confirmedBets.SMALL)}
+          isSyncingBalance={isSyncingBalance}
+          handleRefreshBalance={handleRefreshBalance}
+          size="md"
+        />
       </div>
 
       {/* Main Game Area */}
@@ -426,53 +493,98 @@ export function SicBo({ onBack }: { onBack: () => void }) {
           {(gameState !== 'betting' || isConfirmed) && (
             <div className="absolute inset-0 z-10 bg-black/20 cursor-not-allowed rounded-2xl"></div>
           )}
-          <button 
-            onClick={() => handleZoneSelect('BIG')}
-            className={`flex flex-col items-center justify-center h-28 rounded-2xl border-2 relative overflow-hidden group transition-all ${isBigActive ? 'gold-gradient luxury-shadow border-[#f9e498]/40' : 'bg-[#d4af37]/30 border-[#d4af37]/40'} ${gameState === 'revealing' && result === 'BIG' ? 'ring-4 ring-green-500' : ''}`}
-          >
-            <div className="absolute inset-0 bg-black/10 group-active:bg-black/30 transition-colors"></div>
-            <span className="text-slate-900 text-3xl font-black tracking-widest italic relative z-10">TÀI</span>
-            <span className="text-slate-900/60 text-sm font-bold mt-1 relative z-10">1:1</span>
-            {tempBets.BIG > 0 && (
-              <div className="absolute top-2 right-2 bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full border border-white/50 shadow-lg">
-                ${tempBets.BIG}
-              </div>
-            )}
-            {selectedZones.includes('BIG') && <div className="absolute inset-0 border-2 border-white/40 rounded-2xl pointer-events-none"></div>}
-          </button>
-          <button 
-            onClick={() => handleZoneSelect('SMALL')}
-            className={`flex flex-col items-center justify-center h-28 rounded-2xl bg-gradient-to-br from-slate-700 to-slate-900 border-2 border-slate-500/30 relative overflow-hidden group shadow-[0_0_15px_rgba(0,0,0,0.5)] ${isSmallActive ? 'ring-2 ring-slate-400' : ''} ${gameState === 'revealing' && result === 'SMALL' ? 'ring-4 ring-green-500' : ''}`}
-          >
-            <div className="absolute inset-0 bg-white/5 group-active:bg-black/30 transition-colors"></div>
-            <span className="text-white text-3xl font-black tracking-widest italic relative z-10">XỈU</span>
-            <span className="text-white/60 text-sm font-bold mt-1 relative z-10">1:1</span>
-            {tempBets.SMALL > 0 && (
-              <div className="absolute top-2 right-2 bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full border border-white/50 shadow-lg">
-                ${tempBets.SMALL}
-              </div>
-            )}
-            {selectedZones.includes('SMALL') && <div className="absolute inset-0 border-2 border-white/30 rounded-2xl pointer-events-none"></div>}
-          </button>
+          {(() => {
+            const isGolden = checkLocalGoldenHour(Date.now()).active;
+            const currentOdds = isGolden ? '1.1' : '1';
+            return (
+              <>
+                <button 
+                  onClick={() => handleZoneSelect('BIG')}
+                  className={`flex flex-col items-center justify-center h-28 rounded-2xl border-2 relative overflow-hidden group transition-all ${
+                    isBigActive
+                      ? 'gold-gradient luxury-shadow border-[#f9e498]/40'
+                      : isGolden
+                        ? 'bg-[#ffe885]/15 border-[#ffe885]/80 shadow-[0_0_15px_rgba(255,232,133,0.35)]'
+                        : 'bg-[#d4af37]/30 border-[#d4af37]/40'
+                  } ${gameState === 'revealing' && result === 'BIG' ? 'ring-4 ring-green-500' : ''} ${selectedZones.BIG ? 'ring-2 ring-white/80' : ''}`}
+                >
+                  <div className="absolute inset-0 bg-black/10 group-active:bg-black/30 transition-colors"></div>
+                  <span className={`text-2xl font-black tracking-widest italic relative z-10 ${
+                    isBigActive
+                      ? 'text-slate-900'
+                      : isGolden
+                        ? 'text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.6)]'
+                        : 'text-slate-900'
+                  }`}>TÀI</span>
+                  <span className={`text-xs font-bold mt-0.5 relative z-10 ${
+                    isBigActive
+                      ? 'text-slate-900/60'
+                      : isGolden
+                        ? 'text-amber-300 font-black'
+                        : 'text-slate-900/60'
+                  }`}>1:{currentOdds}</span>
+                  {tempBets.BIG > 0 && (
+                    <div className="absolute top-2 right-2 bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full border border-white/50 shadow-lg z-20">
+                      ${tempBets.BIG}
+                    </div>
+                  )}
+                  {selectedZones.BIG && <div className="absolute inset-0 border-2 border-white/40 rounded-2xl pointer-events-none z-20"></div>}
+                </button>
+
+                <button 
+                  onClick={() => handleZoneSelect('SMALL')}
+                  className={`flex flex-col items-center justify-center h-28 rounded-2xl border-2 relative overflow-hidden group transition-all ${
+                    isSmallActive
+                      ? 'ring-1 ring-slate-400 bg-gradient-to-br from-slate-700 to-slate-900'
+                      : isGolden
+                        ? 'bg-gradient-to-br from-amber-950/40 to-slate-950 border-[#ffe885]/80 shadow-[0_0_15px_rgba(255,232,133,0.35)]'
+                        : 'bg-gradient-to-br from-slate-700 to-slate-900 border border-slate-500/20'
+                  } ${gameState === 'revealing' && result === 'SMALL' ? 'ring-4 ring-green-500' : ''} ${selectedZones.SMALL ? 'ring-2 ring-white/80' : ''}`}
+                >
+                  <div className="absolute inset-0 bg-white/5 group-active:bg-black/30 transition-colors"></div>
+                  <span className={`text-2xl font-black tracking-widest italic relative z-10 ${
+                    isSmallActive
+                      ? 'text-white'
+                      : isGolden
+                        ? 'text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.6)]'
+                        : 'text-white'
+                  }`}>XỈU</span>
+                  <span className={`text-xs font-bold mt-0.5 relative z-10 ${
+                    isSmallActive
+                      ? 'text-white/60'
+                      : isGolden
+                        ? 'text-amber-300 font-black'
+                        : 'text-white/60'
+                  }`}>1:{currentOdds}</span>
+                  {tempBets.SMALL > 0 && (
+                    <div className="absolute top-2 right-2 bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full border border-white/50 shadow-lg z-20">
+                      ${tempBets.SMALL}
+                    </div>
+                  )}
+                  {selectedZones.SMALL && <div className="absolute inset-0 border-2 border-white/30 rounded-2xl pointer-events-none z-20"></div>}
+                </button>
+              </>
+            );
+          })()}
         </div>
 
         {/* Chips Selector - giống HTML */}
-        <div className={`flex justify-center gap-3 overflow-x-auto pb-4 no-scrollbar transition-opacity ${(!selectedZones.length || isConfirmed || gameState !== 'betting') ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`flex justify-center gap-3 overflow-x-auto pb-4 no-scrollbar transition-opacity ${(selectedCount === 0 || isConfirmed || gameState !== 'betting') ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
           {CHIPS.map(chip => (
             <div key={chip.val} className="flex flex-col items-center gap-2 shrink-0">
               <button 
                 onClick={() => handleChipClick(chip)}
-                disabled={gameState !== 'betting' || isConfirmed}
+                disabled={gameState !== 'betting' || isConfirmed || selectedCount === 0 || (chip.isPercent50 ? false : balance < tempBets.BIG + tempBets.SMALL + chip.amount * selectedCount)}
                 className={`size-14 rounded-full flex items-center justify-center text-xs shadow-lg transition-all ${chip.className} ${gameState !== 'betting' ? 'grayscale opacity-50' : 'hover:scale-105 active:scale-95'} ${selectedChip.val === chip.val ? 'scale-110 ring-4 ring-[#d4af37]/20' : ''}`}
               >
-                ${chip.val}
+                {chip.isPercent50 ? '50%' : `$${chip.val}`}
               </button>
             </div>
           ))}
         </div>
         
         {/* Custom Bet Input - ẩn gọn hơn */}
-        {selectedZones.length > 0 && (
+        {selectedCount > 0 && (
           <div className="flex items-center gap-2 bg-black/60 rounded-full border border-[#d4af37]/30 px-4 py-2 shadow-inner w-64 mx-auto">
             <span className="text-[#d4af37] font-bold">$</span>
             <input 
@@ -485,7 +597,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
             />
             <button 
               onClick={handleCustomBet}
-              disabled={gameState !== 'betting' || !customBetAmount || isConfirmed}
+              disabled={gameState !== 'betting' || !customBetAmount || isConfirmed || selectedCount === 0}
               className="text-slate-900 gold-gradient px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider disabled:opacity-50 active:scale-95 transition-transform"
             >
               Đặt

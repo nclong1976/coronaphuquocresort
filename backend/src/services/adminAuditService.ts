@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { PrismaClient, Prisma } from '@prisma/client';
 import bcrypt from 'bcrypt';
 

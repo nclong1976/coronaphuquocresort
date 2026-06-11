@@ -1,0 +1,10 @@
+{
+  "name": "@prisma/client",
+  "version": "5.22.0",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./*": "./*"
+  }
+}

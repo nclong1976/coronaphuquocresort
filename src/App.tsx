@@ -728,6 +728,7 @@ function WithdrawScreen({ onBack, user, onWithdrawSubmit, useApi, isOnline = tru
   const c = vipColors[user.vipLevel] ?? vipColors[0];
 
   const [amount, setAmount] = useState('');
+  const [withdrawPassword, setWithdrawPassword] = useState('');
 
   const handleSubmit = async () => {
     const numAmount = parseFloat(amount);
@@ -737,6 +738,10 @@ function WithdrawScreen({ onBack, user, onWithdrawSubmit, useApi, isOnline = tru
     }
     if (numAmount > user.balance) {
       alert("Số dư không đủ!");
+      return;
+    }
+    if (!withdrawPassword || withdrawPassword.length !== 6 || !/^\d+$/.test(withdrawPassword)) {
+      alert("Vui lòng nhập mật khẩu rút tiền gồm 6 chữ số!");
       return;
     }
     if (useApi) {
@@ -749,7 +754,7 @@ function WithdrawScreen({ onBack, user, onWithdrawSubmit, useApi, isOnline = tru
         const bankInfo = (user.bankName && user.bankAccountNumber)
           ? { bankName: user.bankName, bankAccountNumber: user.bankAccountNumber }
           : undefined;
-        await walletApi.withdrawRequest(numAmount, bankInfo);
+        await walletApi.withdrawRequest(numAmount, withdrawPassword, bankInfo);
         onSyncBalance?.();
         alert('Yêu cầu rút tiền đã gửi. Số tiền đã được trừ. Admin sẽ xử lý trong thời gian sớm nhất.');
         onBack();
@@ -858,6 +863,24 @@ function WithdrawScreen({ onBack, user, onWithdrawSubmit, useApi, isOnline = tru
             </div>
           </div>
 
+          {/* Withdrawal Password Input */}
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-slate-300 ml-1">Mật khẩu rút tiền (6 chữ số PIN)</label>
+            <div className="relative group">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors">
+                <Lock size={18} />
+              </span>
+              <input 
+                value={withdrawPassword}
+                onChange={(e) => setWithdrawPassword(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full bg-white/5 border border-white/10 h-14 pl-12 pr-4 rounded-xl text-lg font-mono focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none text-white placeholder:text-slate-600 tracking-[0.2em] transition-all" 
+                placeholder="••••••" 
+                type="password"
+                maxLength={6}
+              />
+            </div>
+          </div>
+
           {/* Info Box */}
           <div className="p-4 rounded-xl bg-white/5 border border-white/5 space-y-2">
             <div className="flex items-start gap-2">
@@ -923,7 +946,7 @@ async function imageFileToJpegDataUrl(file: File, maxW = 1600, quality = 0.82): 
   });
 }
 
-type SupportChatLine = { id: string; sender: 'user' | 'cs'; text: string; time: string; attachmentUrl?: string | null };
+type SupportChatLine = { id: string; sender: 'user' | 'cs'; text: string; time: string; attachmentUrl?: string | null; readAt?: string | null };
 
 // --- MÀN HÌNH 5: TRUNG TÂM HỖ TRỢ (sau đăng nhập): chat CS, thông báo admin, FAQ ---
 function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOpen = false, initialMessage = '' }: { onOpenMenu: () => void, onBack: () => void, user: any, useApi?: boolean, initialChatOpen?: boolean, initialMessage?: string }) {
@@ -940,9 +963,29 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
   const [errorImg, setErrorImg] = useState<string | null>(null);
   const [faqOpen, setFaqOpen] = useState<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const { notices, unreadCount: noticeUnread, markNoticesSeen } = usePlayerNotifications();
+  const { notices, unreadCount: noticeUnread, unreadSupportCount, markNoticesSeen, setSupportChatOpen } = usePlayerNotifications();
+
+  // Keep context in sync so unread badge clears when chat is open
+  useEffect(() => {
+    setSupportChatOpen(isChatOpen);
+    return () => setSupportChatOpen(false);
+  }, [isChatOpen, setSupportChatOpen]);
 
   const currentVip = VIP_CONFIG.find(v => v.level === user.vipLevel) || VIP_CONFIG[0];
+
+  const isChatOpenRef = useRef(isChatOpen);
+  useEffect(() => {
+    isChatOpenRef.current = isChatOpen;
+  }, [isChatOpen]);
+
+  // Đánh dấu đã đọc khi mở chat hoặc có ticketId mới
+  useEffect(() => {
+    if (isChatOpen && ticketId) {
+      import('./api/client').then(({ supportApi }) => {
+        supportApi.markTicketAsRead(ticketId).catch(() => {});
+      });
+    }
+  }, [isChatOpen, ticketId]);
 
   useEffect(() => {
     ticketIdRef.current = ticketId;
@@ -978,7 +1021,8 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
             sender: m.senderRole === 'admin' ? 'cs' : 'user',
             text: m.content || '',
             attachmentUrl: m.attachmentUrl || null,
-            time: m.createdAt ? new Date(m.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : ''
+            time: m.createdAt ? new Date(m.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '',
+            readAt: m.readAt || null,
           }));
           setChatHistory(msgs.length ? msgs : [{ id: '1', sender: 'cs', text: 'Chào bạn! Admin sẽ phản hồi trong thời gian sớm nhất.', time: '' }]);
         } else {
@@ -996,8 +1040,7 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
   /** Realtime ticket: lắng nghe ngay cả khi ticketId chưa set (gắn ticket khi admin trả lời đầu tiên). */
   useEffect(() => {
     if (!useApi || !socket) return;
-    const handler = (payload: { ticketId: string; message: { id: string; content: string; senderRole: string; createdAt: string } }) => {
-      if (payload.message.senderRole !== 'admin') return;
+    const handler = (payload: { ticketId: string; tempId?: string | null; message: { id: string; content: string; senderRole: string; createdAt: string; attachmentUrl?: string | null } }) => {
       let tid = ticketIdRef.current;
       if (!tid) {
         tid = payload.ticketId;
@@ -1005,23 +1048,82 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
         setTicketId(tid);
       }
       if (payload.ticketId !== tid) return;
+      const isCs = payload.message.senderRole === 'admin';
+      const senderVal = isCs ? ('cs' as const) : ('user' as const);
+
       setChatHistory((prev) => {
+        if (payload.tempId && prev.some((m) => m.id === payload.tempId)) {
+          return prev.map((m) =>
+            m.id === payload.tempId
+              ? {
+                  id: payload.message.id,
+                  sender: senderVal,
+                  text: payload.message.content,
+                  attachmentUrl: payload.message.attachmentUrl ?? null,
+                  time: new Date(payload.message.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                  readAt: null,
+                }
+              : m
+          );
+        }
         if (prev.some((m) => m.id === payload.message.id)) return prev;
         return [
           ...prev,
           {
             id: payload.message.id,
-            sender: 'cs' as const,
+            sender: senderVal,
             text: payload.message.content,
-            attachmentUrl: (payload.message as { attachmentUrl?: string | null }).attachmentUrl ?? null,
+            attachmentUrl: payload.message.attachmentUrl ?? null,
             time: new Date(payload.message.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            readAt: null,
           },
         ];
       });
+      // Nếu đang mở khung chat và tin nhắn từ CS, tự động đánh dấu đã đọc ngay lập tức
+      if (isChatOpenRef.current && isCs) {
+        import('./api/client').then(({ supportApi }) => {
+          supportApi.markTicketAsRead(payload.ticketId).catch(() => {});
+        });
+      }
     };
+
+    const readHandler = (payload: { ticketId: string }) => {
+      const tid = ticketIdRef.current;
+      if (payload.ticketId === tid) {
+        setChatHistory((prev) =>
+          prev.map((m) => ({
+            ...m,
+            readAt: m.readAt || new Date().toISOString(),
+          }))
+        );
+      }
+    };
+
+    const ticketDeletedHandler = (payload: { ticketId: string }) => {
+      const tid = ticketIdRef.current;
+      if (payload.ticketId === tid) {
+        ticketIdRef.current = null;
+        setTicketId(null);
+        setChatHistory([{ id: '1', sender: 'cs', text: 'Cuộc hội thoại đã bị xóa bởi Super Admin.', time: '' }]);
+      }
+    };
+
+    const messageDeletedHandler = (payload: { ticketId: string; messageId: string }) => {
+      const tid = ticketIdRef.current;
+      if (payload.ticketId === tid) {
+        setChatHistory((prev) => prev.filter((m) => m.id !== payload.messageId));
+      }
+    };
+
     socket.on('support_message', handler);
+    socket.on('support_messages_read', readHandler);
+    socket.on('support_ticket_deleted', ticketDeletedHandler);
+    socket.on('support_message_deleted', messageDeletedHandler);
     return () => {
       socket.off('support_message', handler);
+      socket.off('support_messages_read', readHandler);
+      socket.off('support_ticket_deleted', ticketDeletedHandler);
+      socket.off('support_message_deleted', messageDeletedHandler);
     };
   }, [useApi, socket]);
 
@@ -1069,6 +1171,7 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
           text: displayText,
           attachmentUrl: imgSnap?.preview ?? null,
           time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          readAt: null,
         },
       ]);
       return;
@@ -1082,6 +1185,7 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
       text: displayText,
       attachmentUrl: imgSnap?.url ?? null,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      readAt: null,
     };
     setChatHistory((prev) => [...prev, newMsg]);
 
@@ -1094,20 +1198,31 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
         ticketIdRef.current = tid;
         setTicketId(tid);
       }
-      const { message: saved } = await supportApi.sendMessage(tid, displayText, imgSnap ? { attachmentUrl: imgSnap.url, attachmentType: 'image' } : undefined);
-      setChatHistory((prev) =>
-        prev.map((m) =>
-          m.id === tempId
-            ? {
-                id: saved.id,
-                sender: 'user',
-                text: saved.content,
-                attachmentUrl: saved.attachmentUrl ?? null,
-                time: new Date(saved.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-              }
-            : m
-        )
-      );
+      if (socket && socket.connected) {
+        socket.emit('support_message', {
+          ticketId: tid,
+          content: displayText,
+          attachmentUrl: imgSnap ? imgSnap.url : undefined,
+          attachmentType: imgSnap ? 'image' : undefined,
+          tempId,
+        });
+      } else {
+        const { message: saved } = await supportApi.sendMessage(tid, displayText, imgSnap ? { attachmentUrl: imgSnap.url, attachmentType: 'image' } : undefined);
+        setChatHistory((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? {
+                  id: saved.id,
+                  sender: 'user',
+                  text: saved.content,
+                  attachmentUrl: saved.attachmentUrl ?? null,
+                  time: new Date(saved.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                  readAt: saved.readAt ?? null,
+                }
+              : m
+          )
+        );
+      }
     } catch {
       setChatHistory((prev) => prev.filter((m) => m.id !== tempId));
       setMessage(text);
@@ -1162,6 +1277,11 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
               >
                 <Phone size={18} />
                 LIÊN HỆ NGAY
+                {(unreadSupportCount + noticeUnread) > 0 && (
+                  <span className="bg-red-600 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-1">
+                    {(unreadSupportCount + noticeUnread) > 9 ? '9+' : (unreadSupportCount + noticeUnread)}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -1174,8 +1294,13 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
           <h3 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-4">Liên hệ, chat &amp; thông báo</h3>
           <div className="grid grid-cols-1 gap-3">
             <button onClick={() => setIsChatOpen(true)} className="w-full bg-[#0a0a0a] rounded-xl p-4 flex items-center gap-4 border border-slate-400/20 hover:bg-white/5 transition-colors text-left">
-              <div className="size-12 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 border border-slate-700 shrink-0">
+              <div className="relative size-12 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 border border-slate-700 shrink-0">
                 <MessageCircle size={24} />
+                {useApi && unreadSupportCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-0.5 flex items-center justify-center rounded-full bg-red-600 text-white text-[9px] font-black">
+                    {unreadSupportCount > 9 ? '9+' : unreadSupportCount}
+                  </span>
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <h4 className="font-bold text-slate-100">Chat với CS / Admin</h4>
@@ -1329,7 +1454,12 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
                   </div>
                   <div className={`flex items-center gap-1 ${msg.sender === 'user' ? 'mr-2' : 'ml-2'}`}>
                     <span className="text-[9px] text-slate-500">{msg.time}</span>
-                    {msg.sender === 'user' && <CheckCheck className="text-[12px] text-yellow-500" size={14} />}
+                    {msg.sender === 'user' && (
+                      <span className={`text-[9px] flex items-center gap-0.5 ${msg.readAt ? 'text-emerald-400 font-medium' : 'text-slate-500'}`}>
+                        {msg.readAt ? 'Đã xem' : 'Đã gửi'}
+                        <CheckCheck className={msg.readAt ? 'text-emerald-400' : 'text-slate-500'} size={12} />
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -2001,11 +2131,9 @@ export default function App() {
   const { isCasinoScreenEnabled, rowForCasinoScreen, catalog } = useGameCatalog(socket, token);
   const { isOnline, syncBalance } = useWallet();
   const apiUser = useUserAdapter();
-  const { unreadCount: supportNoticeUnread } = usePlayerNotifications();
+  const { unreadCount: supportNoticeUnread, unreadSupportCount: supportChatUnread } = usePlayerNotifications();
   const { user: storeUser, setUser: setStoreUser, deposit } = useStore();
   const updateBalance = useBalanceUpdate();
-
-  const user = apiUser ?? storeUser;
 
   const [currentScreen, setCurrentScreen] = useState<
     | 'home'
@@ -2034,6 +2162,186 @@ export default function App() {
     | 'slots'
     | 'roulette'
   >('home');
+
+  const [noticeToast, setNoticeToast] = useState<{ title: string; content: string } | null>(null);
+  const [adminUnreadCount, setAdminUnreadCount] = useState(0);
+  const adminNoticeAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    const a = new Audio('/audio/game-over.mp3');
+    a.preload = 'auto';
+    a.loop = true;
+    adminNoticeAudioRef.current = a;
+    return () => {
+      a.pause();
+      adminNoticeAudioRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (currentScreen === 'admin') {
+      const a = adminNoticeAudioRef.current;
+      if (a) {
+        a.pause();
+        a.currentTime = 0;
+      }
+    }
+  }, [currentScreen]);
+
+  const isAdminRole = ['admin', 'assistant', 'super_admin'].includes(String(apiUser?.role || authUser?.role || '').toLowerCase());
+
+  // Tải số lượng ticket chưa đọc của admin khi mount / thay đổi role
+  useEffect(() => {
+    if (!isAdminRole || !token) {
+      setAdminUnreadCount(0);
+      return;
+    }
+    const fetchAdminUnread = async () => {
+      try {
+        const { supportApi } = await import('./api/client');
+        const { tickets } = await supportApi.getTickets();
+        const unread = tickets.filter((tk: any) => {
+          const msgs = tk.messages || [];
+          const last = msgs[msgs.length - 1];
+          return last && last.senderRole === 'user' && tk.status !== 'closed';
+        }).length;
+        setAdminUnreadCount(unread);
+      } catch {}
+    };
+    fetchAdminUnread();
+  }, [isAdminRole, token]);
+
+  // Hiển thị thông báo Toast nổi thời gian thực khi Admin gửi tin nhắn/thông báo
+  useEffect(() => {
+    if (!socket || !authUser) return;
+
+    const showToast = (title: string, content: string) => {
+      setNoticeToast({ title, content });
+      // Phát âm thanh chuông nhẹ để gây chú ý
+      const chime = new Audio('/audio/chime.mp3');
+      chime.volume = 0.5;
+      void chime.play().catch(() => {});
+    };
+
+    const handleBroadcast = (d: { content?: string }) => {
+      showToast('Thông báo hệ thống', d.content || 'Bạn nhận được thông báo mới từ Admin.');
+    };
+
+    const handleDirect = (d: { content?: string }) => {
+      showToast('Thông báo cá nhân', d.content || 'Bạn nhận được thông báo riêng từ Admin.');
+    };
+
+    const handleSupportMsg = (payload: { ticketId: string; message: { senderRole: string; content: string } }) => {
+      const isAdmin = ['admin', 'assistant', 'super_admin'].includes(String(apiUser?.role || authUser?.role || '').toLowerCase());
+      if (isAdmin) {
+        if (payload.message.senderRole === 'user') {
+          if (currentScreen !== 'admin') {
+            showToast('Tin nhắn mới từ người chơi', payload.message.content || 'Có tin nhắn mới gửi đến hệ thống.');
+            const a = adminNoticeAudioRef.current;
+            if (a && a.paused) {
+              a.loop = true;
+              a.currentTime = 0;
+              void a.play().catch(() => {});
+            }
+          }
+          // Cập nhật số badge admin
+          import('./api/client').then(({ supportApi }) => {
+            supportApi.getTickets().then((res) => {
+              if (res.tickets) {
+                const unread = res.tickets.filter((tk: any) => {
+                  const msgs = tk.messages || [];
+                  const last = msgs[msgs.length - 1];
+                  return last && last.senderRole === 'user' && tk.status !== 'closed';
+                }).length;
+                setAdminUnreadCount(unread);
+              }
+            }).catch(() => {});
+          });
+        }
+      } else {
+        if (payload.message.senderRole === 'admin') {
+          if (currentScreen !== 'contact') {
+            showToast('Tin nhắn hỗ trợ', payload.message.content || 'CSKH đã trả lời yêu cầu hỗ trợ của bạn.');
+          } else {
+            // Phát chuông báo tin nhắn đến khi đang xem chat
+            const chime = new Audio('/audio/chime.mp3');
+            chime.volume = 0.5;
+            void chime.play().catch(() => {});
+          }
+        }
+      }
+    };
+
+    const handleSupportRead = (payload: { ticketId: string }) => {
+      const isAdmin = ['admin', 'assistant', 'super_admin'].includes(String(apiUser?.role || authUser?.role || '').toLowerCase());
+      if (isAdmin) {
+        import('./api/client').then(({ supportApi }) => {
+          supportApi.getTickets().then((res) => {
+            if (res.tickets) {
+              const unread = res.tickets.filter((tk: any) => {
+                const msgs = tk.messages || [];
+                const last = msgs[msgs.length - 1];
+                return last && last.senderRole === 'user' && tk.status !== 'closed';
+              }).length;
+              setAdminUnreadCount(unread);
+            }
+          }).catch(() => {});
+        });
+      }
+    };
+
+    const handleBalanceUpdated = (payload: { balance: number; type?: string; amount?: number; game?: string }) => {
+      if (payload.type === 'win' && payload.amount && payload.amount > 0) {
+        const gameNamesMap: Record<string, string> = {
+          sicbo: 'Sic Bo',
+          baccarat: 'Baccarat',
+          tigerbaccarat: 'Tiger Baccarat',
+          dragontiger: 'Dragon Tiger',
+          roulette: 'Roulette',
+          blackjack: 'Blackjack',
+          slot: 'Slot Machine',
+          baicao: 'Bài Cào',
+          threecard: 'Three Card Poker',
+          caribbean: 'Caribbean Stud',
+          niuniu: 'Niu Niu',
+          texasholdem: "Texas Hold'em",
+          russianpoker: 'Russian Poker',
+        };
+        const gName = gameNamesMap[payload.game || ''] || payload.game || 'Trò chơi';
+        showToast(
+          'Chúc mừng chiến thắng! 🎉',
+          `Bạn đã thắng +$${payload.amount.toLocaleString()} tại game ${gName}!`
+        );
+        const winSound = new Audio('https://assets.mixkit.co/active_storage/sfx/2019-success-chime-2574.mp3');
+        winSound.volume = 0.5;
+        void winSound.play().catch(() => {});
+      }
+    };
+
+    socket.on('admin_broadcast', handleBroadcast);
+    socket.on('admin_direct', handleDirect);
+    socket.on('support_message', handleSupportMsg);
+    socket.on('support_messages_read', handleSupportRead);
+    socket.on('balance_updated', handleBalanceUpdated);
+
+    return () => {
+      socket.off('admin_broadcast', handleBroadcast);
+      socket.off('admin_direct', handleDirect);
+      socket.off('support_message', handleSupportMsg);
+      socket.off('support_messages_read', handleSupportRead);
+      socket.off('balance_updated', handleBalanceUpdated);
+    };
+  }, [socket, authUser, currentScreen, apiUser?.role]);
+
+  // Tự động đóng Toast sau 5 giây
+  useEffect(() => {
+    if (!noticeToast) return;
+    const t = setTimeout(() => setNoticeToast(null), 5000);
+    return () => clearTimeout(t);
+  }, [noticeToast]);
+
+  const user = apiUser ?? storeUser;
+
   const [showCasinoCommitment, setShowCasinoCommitment] = useState(false);
   const camketPrevScreenRef = useRef<string | null>(null);
 
@@ -2160,54 +2468,87 @@ export default function App() {
     setCurrentScreen('withdraw');
   };
 
-  if (currentScreen === 'add-card') {
-    return <AddCardScreen onBack={() => setCurrentScreen('profile')} onLinkSuccess={handleLinkCardSuccess} user={user} useApi={!!apiUser} />;
-  }
+  let content: React.ReactNode = null;
 
-  if (currentScreen === 'deposit_history') {
-    return (
+  if (currentScreen === 'add-card') {
+    content = <AddCardScreen onBack={() => setCurrentScreen('profile')} onLinkSuccess={handleLinkCardSuccess} user={user} useApi={!!apiUser} />;
+  } else if (currentScreen === 'deposit_history') {
+    content = (
       <DepositWithdrawHistoryScreen
         mode="deposit"
         onBack={() => setCurrentScreen('profile')}
         useApi={!!apiUser}
       />
     );
-  }
-
-  if (currentScreen === 'withdraw_history') {
-    return (
+  } else if (currentScreen === 'withdraw_history') {
+    content = (
       <DepositWithdrawHistoryScreen
         mode="withdraw"
         onBack={() => setCurrentScreen('profile')}
         useApi={!!apiUser}
       />
     );
+  } else if (currentScreen === 'deposit') {
+    content = <DepositScreen onBack={() => setCurrentScreen('profile')} onDepositSubmit={handleDepositSubmit} user={user} useApi={!!apiUser} isOnline={isOnline} />;
+  } else if (currentScreen === 'withdraw') {
+    content = <WithdrawScreen onBack={() => setCurrentScreen('profile')} user={user} onWithdrawSubmit={handleWithdrawSubmit} useApi={!!apiUser} isOnline={isOnline} onSyncBalance={syncBalance} />;
+  } else if (currentScreen === 'threecard') {
+    content = <ThreeCardPoker onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'caribbean') {
+    content = <CaribbeanStud onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'niuniu') {
+    content = <NiuNiu onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'xidach') {
+    content = <XiDach onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'xucxac') {
+    content = authUser ? <SicBoApi onBack={() => setCurrentScreen('casino')} /> : <SicBo onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'texas') {
+    content = <TexasHoldem onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'russian') {
+    content = <RussianPoker onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'baicao') {
+    content = <BaiCao onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'tigerbaccarat') {
+    content = <TigerBaccarat onBack={() => setCurrentScreen('casino')} user={user} onUpdateBalance={updateBalance} />;
+  } else if (currentScreen === 'baccaratlongho') {
+    content = <BaccaratLongHo onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'slots') {
+    content = authUser ? <SlotApi onBack={() => setCurrentScreen('casino')} /> : <SlotMachine onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'roulette') {
+    content = authUser ? <RouletteApi onBack={() => setCurrentScreen('casino')} /> : <Roulette onBack={() => setCurrentScreen('casino')} />;
+  } else if (currentScreen === 'admin') {
+    content = <AdminDashboard onBack={() => setCurrentScreen('profile')} />;
   }
-
-  if (currentScreen === 'deposit') {
-    return <DepositScreen onBack={() => setCurrentScreen('profile')} onDepositSubmit={handleDepositSubmit} user={user} useApi={!!apiUser} isOnline={isOnline} />;
-  }
-
-  if (currentScreen === 'withdraw') {
-    return <WithdrawScreen onBack={() => setCurrentScreen('profile')} user={user} onWithdrawSubmit={handleWithdrawSubmit} useApi={!!apiUser} isOnline={isOnline} onSyncBalance={syncBalance} />;
-  }
-
-  if (currentScreen === 'threecard') return <ThreeCardPoker onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'caribbean') return <CaribbeanStud onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'niuniu') return <NiuNiu onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'xidach') return <XiDach onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'xucxac') return authUser ? <SicBoApi onBack={() => setCurrentScreen('casino')} /> : <SicBo onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'texas') return <TexasHoldem onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'russian') return <RussianPoker onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'baicao') return <BaiCao onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'tigerbaccarat') return <TigerBaccarat onBack={() => setCurrentScreen('casino')} user={user} onUpdateBalance={updateBalance} />;
-  if (currentScreen === 'baccaratlongho') return <BaccaratLongHo onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'slots') return authUser ? <SlotApi onBack={() => setCurrentScreen('casino')} /> : <SlotMachine onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'roulette') return authUser ? <RouletteApi onBack={() => setCurrentScreen('casino')} /> : <Roulette onBack={() => setCurrentScreen('casino')} />;
-  if (currentScreen === 'admin') return <AdminDashboard onBack={() => setCurrentScreen('profile')} />;
 
   return (
     <div className="min-h-screen">
+      {/* Dynamic Keyframes for sliding Toast notice */}
+      <style>{`
+        @keyframes slideDown {
+          from { transform: translateY(-100%) scale(0.9); opacity: 0; }
+          to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+      `}</style>
+
+      {/* Real-time Toast Notification overlay */}
+      {noticeToast && (
+        <div 
+          style={{
+            animation: 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+          }}
+          className="fixed top-4 left-4 right-4 z-[9999] max-w-sm mx-auto bg-gradient-to-br from-[#bf953f] via-[#fcf6ba] to-[#b38728] text-black rounded-2xl p-4 shadow-[0_10px_30px_rgba(0,0,0,0.5)] border border-yellow-300/40 flex items-start gap-3 backdrop-blur-md"
+        >
+          <Bell size={20} className="shrink-0 text-amber-950 mt-0.5 animate-bounce" />
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-xs uppercase tracking-wider text-amber-950">{noticeToast.title}</p>
+            <p className="text-sm mt-0.5 text-black font-semibold break-words">{noticeToast.content}</p>
+          </div>
+          <button onClick={() => setNoticeToast(null)} className="text-amber-950 hover:text-black shrink-0 p-0.5">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       {authModal === 'login' && (
         <LoginModal
           onClose={() => setAuthModal(null)}
@@ -2241,7 +2582,8 @@ export default function App() {
         backgroundPosition: '0 0, 40px 60px, 130px 270px'
       }}></div>
 
-      <div className="relative flex min-h-screen w-full max-w-md mx-auto flex-col shadow-2xl overflow-x-hidden bg-[#020202] text-slate-100 font-sans pb-10" onClick={handleGlobalClick}>
+      {!content ? (
+        <div className="relative flex min-h-screen w-full max-w-md mx-auto flex-col shadow-2xl overflow-x-hidden bg-[#020202] text-slate-100 font-sans pb-10" onClick={handleGlobalClick}>
         {currentScreen === 'home' && <LandingPage onOpenMenu={() => setIsSidebarOpen(true)} onNavigate={(s) => navigate(s)} />}
         {currentScreen === 'casino' && (
           <>
@@ -2363,9 +2705,9 @@ export default function App() {
                 >
                   <HeadphonesIcon size={20} />
                   <span className="font-bold uppercase tracking-wider text-sm">HỖ TRỢ</span>
-                  {authUser && supportNoticeUnread > 0 && (
+                  {authUser && (supportNoticeUnread + supportChatUnread) > 0 && (
                     <span className="absolute top-2 right-2 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-600 text-white text-[10px] font-bold">
-                      {supportNoticeUnread > 9 ? '9+' : supportNoticeUnread}
+                      {(supportNoticeUnread + supportChatUnread) > 9 ? '9+' : (supportNoticeUnread + supportChatUnread)}
                     </span>
                   )}
                 </button>
@@ -2379,17 +2721,25 @@ export default function App() {
                 {['admin', 'assistant', 'super_admin'].includes(String(apiUser?.role || '').toLowerCase()) && (
                   <button 
                     onClick={() => navigate('admin')}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${currentScreen === 'admin' ? 'bg-amber-500/10 text-amber-500' : 'text-slate-300 hover:bg-white/5 hover:text-white'}`}
+                    className={`relative flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${currentScreen === 'admin' ? 'bg-amber-500/10 text-amber-500' : 'text-slate-300 hover:bg-white/5 hover:text-white'}`}
                   >
                     <Shield size={20} />
                     <span className="font-bold uppercase tracking-wider text-sm">ADMIN</span>
+                    {adminUnreadCount > 0 && (
+                      <span className="absolute top-2 right-2 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-600 text-white text-[10px] font-bold">
+                        {adminUnreadCount > 9 ? '9+' : adminUnreadCount}
+                      </span>
+                    )}
                   </button>
                 )}
               </div>
             </div>
           </div>
         )}
-      </div>
+        </div>
+      ) : (
+        content
+      )}
     </div>
   );
 }

@@ -42,49 +42,51 @@ export function TransactionsPage() {
       </div>
 
       <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-slate-800/50">
-            <tr>
-              <th className="text-left px-4 py-3 text-slate-400 font-medium">Kind</th>
-              <th className="text-left px-4 py-3 text-slate-400 font-medium">Detail</th>
-              <th className="text-left px-4 py-3 text-slate-400 font-medium">User / Admin</th>
-              <th className="text-left px-4 py-3 text-slate-400 font-medium">Amount</th>
-              <th className="text-left px-4 py-3 text-slate-400 font-medium">Date</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800">
-            {feed.map((row: any) =>
-              row.kind === 'audit' ? (
-                <tr key={`a-${row.id}`} className="hover:bg-slate-800/30">
-                  <td className="px-4 py-3 text-violet-400 text-xs font-bold">audit</td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className="text-slate-300">{row.action}</span>
-                    <p className="text-slate-500 text-xs mt-1">{row.summary}</p>
-                  </td>
-                  <td className="px-4 py-3">@{row.adminUsername}</td>
-                  <td className="px-4 py-3">—</td>
-                  <td className="px-4 py-3 text-slate-500">{new Date(row.createdAt).toLocaleString()}</td>
-                </tr>
-              ) : (
-                <tr key={`l-${row.id}`} className="hover:bg-slate-800/30">
-                  <td className="px-4 py-3">
-                    <span
-                      className={`px-2 py-0.5 rounded text-xs ${
-                        row.type === 'deposit' || row.type === 'win' ? 'bg-green-600/20 text-green-500' : 'bg-red-600/20 text-red-500'
-                      }`}
-                    >
-                      {row.type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-400">{row.game || '-'}</td>
-                  <td className="px-4 py-3">{row.user?.username || row.userId}</td>
-                  <td className="px-4 py-3 font-mono">${Number(row.amount).toLocaleString()}</td>
-                  <td className="px-4 py-3 text-slate-500">{new Date(row.createdAt).toLocaleString()}</td>
-                </tr>
-              )
-            )}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-slate-800/50">
+              <tr>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Kind</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Detail</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">User / Admin</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Amount</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Date</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {feed.map((row: any) =>
+                row.kind === 'audit' ? (
+                  <tr key={`a-${row.id}`} className="hover:bg-slate-800/30">
+                    <td className="px-4 py-3 text-violet-400 text-xs font-bold">audit</td>
+                    <td className="px-4 py-3 text-sm">
+                      <span className="text-slate-300">{row.action}</span>
+                      <p className="text-slate-500 text-xs mt-1">{row.summary}</p>
+                    </td>
+                    <td className="px-4 py-3">@{row.adminUsername}</td>
+                    <td className="px-4 py-3">—</td>
+                    <td className="px-4 py-3 text-slate-500">{new Date(row.createdAt).toLocaleString()}</td>
+                  </tr>
+                ) : (
+                  <tr key={`l-${row.id}`} className="hover:bg-slate-800/30">
+                    <td className="px-4 py-3">
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs ${
+                          row.type === 'deposit' || row.type === 'win' ? 'bg-green-600/20 text-green-500' : 'bg-red-600/20 text-red-500'
+                        }`}
+                      >
+                        {row.type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">{row.game || '-'}</td>
+                    <td className="px-4 py-3">{row.user?.username || row.userId}</td>
+                    <td className="px-4 py-3 font-mono">${Number(row.amount).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-slate-500">{new Date(row.createdAt).toLocaleString()}</td>
+                  </tr>
+                )
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,4 @@
 {
-<<<<<<< HEAD
   "version": 2,
   "buildCommand": "npm run vercel:build",
   "outputDirectory": "dist",
@@ -34,17 +33,4 @@
       ]
     }
   ]
-=======
-  "experimentalServices": {
-    "frontend": {
-      "routePrefix": "/",
-      "framework": "vite"
-    },
-    "backend": {
-      "root": "backend",
-      "routePrefix": "/_/backend"
-    }
-  },
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
->>>>>>> 706122c9dc67cc20d5c0b216f121df1795a2ec24
 }

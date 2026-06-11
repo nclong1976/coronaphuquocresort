@@ -210,6 +210,19 @@ export const supportApi = {
     api<{ success: boolean }>(`/api/support/tickets/${ticketId}/read`, {
       method: 'POST',
     }),
+  deleteTicket: (ticketId: string) =>
+    api<{ success: boolean }>(`/api/support/tickets/${ticketId}`, {
+      method: 'DELETE',
+    }),
+  deleteMessage: (messageId: string) =>
+    api<{ success: boolean }>(`/api/support/messages/${messageId}`, {
+      method: 'DELETE',
+    }),
+  toggleHideTicket: (ticketId: string, isHidden: boolean) =>
+    api<{ success: boolean; isHidden: boolean }>(`/api/support/tickets/${ticketId}/toggle-hide`, {
+      method: 'POST',
+      body: JSON.stringify({ isHidden }),
+    }),
 };
 
 export const transactionApi = {

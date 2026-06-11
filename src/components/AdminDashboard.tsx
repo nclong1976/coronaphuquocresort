@@ -26,6 +26,8 @@ import {
   Bell,
   LayoutTemplate,
   UserCog,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { admin } from '../api/adminClient';
 import { CasinoPayoutControl } from './CasinoPayoutControl';
@@ -499,6 +501,7 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
     const onSupport = (payload: {
       ticketId: string;
       message: { id: string; content: string; senderRole: string; createdAt: string; attachmentUrl?: string | null; attachmentType?: string | null };
+      tempId?: string;
     }) => {
       if (payload.message.senderRole !== 'user') return;
 
@@ -584,14 +587,61 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
       );
     };
 
+    const onTicketDeleted = (payload: { ticketId: string }) => {
+      const viewingTicket = chatTicketIdRef.current;
+      if (payload.ticketId === viewingTicket) {
+        setChatTicketId(null);
+      }
+      setTickets((prev) => prev.filter((t) => t.id !== payload.ticketId));
+    };
+
+    const onTicketHiddenChanged = (payload: { ticketId: string; isHidden: boolean }) => {
+      const viewingTicket = chatTicketIdRef.current;
+      if (!isSuperAdminUi && payload.isHidden && viewingTicket === payload.ticketId) {
+        setChatTicketId(null);
+      }
+      setTickets((prev) =>
+        prev.map((t) => {
+          if (t.id === payload.ticketId) {
+            return { ...t, isHidden: payload.isHidden };
+          }
+          return t;
+        })
+      );
+    };
+
+    const onMsgDeleted = (payload: { ticketId: string; messageId: string }) => {
+      const viewingTicket = chatTicketIdRef.current;
+      if (payload.ticketId === viewingTicket) {
+        setChatMessages((prev) => prev.filter((m: any) => m.id !== payload.messageId));
+      }
+      setTickets((prev) =>
+        prev.map((t) => {
+          if (t.id === payload.ticketId) {
+            return {
+              ...t,
+              messages: (t.messages || []).filter((m: any) => m.id !== payload.messageId),
+            };
+          }
+          return t;
+        })
+      );
+    };
+
     socket.on('support_message', onSupport);
     socket.on('support_messages_read', onRead);
+    socket.on('support_ticket_deleted', onTicketDeleted);
+    socket.on('support_message_deleted', onMsgDeleted);
+    socket.on('support_ticket_hidden_changed', onTicketHiddenChanged);
     return () => {
       socket.off('support_message', onSupport);
       socket.off('support_messages_read', onRead);
+      socket.off('support_ticket_deleted', onTicketDeleted);
+      socket.off('support_message_deleted', onMsgDeleted);
+      socket.off('support_ticket_hidden_changed', onTicketHiddenChanged);
       if (deb) clearTimeout(deb);
     };
-  }, [socket, load]);
+  }, [socket, load, isSuperAdminUi]);
 
   useEffect(() => {
     if (!socket) return;
@@ -725,6 +775,43 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
       alert((e as Error).message);
     }
   };
+
+  const handleToggleHideTicket = async (ticketId: string, currentHidden: boolean) => {
+    const actionText = currentHidden ? 'hiện' : 'ẩn';
+    if (!confirm(`Bạn có chắc chắn muốn ${actionText} cuộc hội thoại này khỏi danh sách của các admin thường?`)) return;
+    try {
+      await supportApi.toggleHideTicket(ticketId, !currentHidden);
+      const res = await supportApi.getTickets();
+      if (res.tickets) setTickets(res.tickets);
+    } catch (err) {
+      alert(`Lỗi khi ${actionText} cuộc hội thoại: ` + (err as Error).message);
+    }
+  };
+
+  const handleDeleteTicket = async (ticketId: string) => {
+    if (!confirm('Bạn có chắc chắn muốn xóa cuộc hội thoại này?')) return;
+    try {
+      await supportApi.deleteTicket(ticketId);
+      setChatTicketId(null);
+      const res = await supportApi.getTickets();
+      if (res.tickets) setTickets(res.tickets);
+    } catch (err) {
+      alert('Lỗi khi xóa cuộc hội thoại: ' + (err as Error).message);
+    }
+  };
+
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!confirm('Bạn có chắc chắn muốn xóa tin nhắn này?')) return;
+    try {
+      await supportApi.deleteMessage(messageId);
+      setChatMessages((prev) => prev.filter((m: any) => m.id !== messageId));
+      const res = await supportApi.getTickets();
+      if (res.tickets) setTickets(res.tickets);
+    } catch (err) {
+      alert('Lỗi khi xóa tin nhắn: ' + (err as Error).message);
+    }
+  };
+
 
   const handleSuperEraseFeed = async (kind: 'ledger' | 'audit', id: string) => {
     if (!isSuperAdminUi) return;
@@ -958,6 +1045,7 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
           // Count unread tickets for Chat tab badge
           const isChat = t.id === 'chat';
           const unreadTickets = isChat ? tickets.filter((tk: any) => {
+            if (!isSuperAdminUi && tk.isHidden) return false;
             const msgs = tk.messages || [];
             const last = msgs[msgs.length - 1];
             return last && last.senderRole === 'user' && tk.id !== chatTicketId && !readTicketIds.has(tk.id);
@@ -1398,52 +1486,56 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
               </div>
             )}
 
-            {chatMode === 'ticket' && (
-              <div className="space-y-2">
-                {tickets.length === 0 && <p className="text-slate-400 text-center py-8">Chưa có ticket chat</p>}
-                {tickets.map((t) => {
-                  const msgs = t.messages || [];
-                  const lastMsg = msgs[msgs.length - 1];
-                  const hasUnread = lastMsg && lastMsg.senderRole === 'user' && t.id !== chatTicketId && !readTicketIds.has(t.id);
-                  return (
-                    <div key={t.id} className={`p-4 rounded-xl border transition-colors ${
-                      hasUnread ? 'bg-amber-950/30 border-amber-600/40' : 'bg-slate-800/50 border-slate-700'
-                    }`}>
-                      <div className="flex justify-between items-center mb-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            {hasUnread && <span className="inline-block w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" />}
-                            <p className="font-bold truncate">{t.user?.username}</p>
+            {chatMode === 'ticket' && (() => {
+              const visibleTickets = isSuperAdminUi ? tickets : tickets.filter((t) => !t.isHidden);
+              return (
+                <div className="space-y-2">
+                  {visibleTickets.length === 0 && <p className="text-slate-400 text-center py-8">Chưa có ticket chat</p>}
+                  {visibleTickets.map((t) => {
+                    const msgs = t.messages || [];
+                    const lastMsg = msgs[msgs.length - 1];
+                    const hasUnread = lastMsg && lastMsg.senderRole === 'user' && t.id !== chatTicketId && !readTicketIds.has(t.id);
+                    return (
+                      <div key={t.id} className={`p-4 rounded-xl border transition-colors ${
+                        hasUnread ? 'bg-amber-950/30 border-amber-600/40' : 'bg-slate-800/50 border-slate-700'
+                      }`}>
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              {hasUnread && <span className="inline-block w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" />}
+                              <p className="font-bold truncate">{t.user?.username}</p>
+                              {t.isHidden && <span className="text-[10px] bg-violet-950/60 text-violet-400 border border-violet-500/20 px-1.5 py-0.5 rounded">Bóng ma</span>}
+                            </div>
+                            <p className="text-sm text-slate-400 truncate">{t.user?.email}</p>
+                            {lastMsg && (
+                              <p className={`text-xs mt-1 truncate ${
+                                hasUnread ? 'text-amber-300 font-medium' : 'text-slate-500'
+                              }`}>
+                                {lastMsg.senderRole === 'admin' ? '↩ Bạn: ' : ''}
+                                {(lastMsg.content || '').slice(0, 60) || '📎 File đính kèm'}
+                              </p>
+                            )}
                           </div>
-                          <p className="text-sm text-slate-400 truncate">{t.user?.email}</p>
-                          {lastMsg && (
-                            <p className={`text-xs mt-1 truncate ${
-                              hasUnread ? 'text-amber-300 font-medium' : 'text-slate-500'
-                            }`}>
-                              {lastMsg.senderRole === 'admin' ? '↩ Bạn: ' : ''}
-                              {(lastMsg.content || '').slice(0, 60) || '📎 File đính kèm'}
-                            </p>
-                          )}
+                          <button
+                            onClick={() => {
+                              setChatTicketId(t.id);
+                              setChatMessages(t.messages || []);
+                              supportApi.markTicketAsRead(t.id).catch(() => {});
+                            }}
+                            className={`ml-2 shrink-0 px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-150 hover:scale-105 active:scale-95 ${
+                              hasUnread ? 'bg-amber-500 text-black' : 'bg-amber-600 hover:bg-amber-500'
+                            }`}
+                          >
+                            {hasUnread ? '● Chat' : 'Chat'}
+                          </button>
                         </div>
-                        <button
-                          onClick={() => {
-                            setChatTicketId(t.id);
-                            setChatMessages(t.messages || []);
-                            supportApi.markTicketAsRead(t.id).catch(() => {});
-                          }}
-                          className={`ml-2 shrink-0 px-3 py-1.5 rounded-lg text-sm font-bold transition-all duration-150 hover:scale-105 active:scale-95 ${
-                            hasUnread ? 'bg-amber-500 text-black' : 'bg-amber-600 hover:bg-amber-500'
-                          }`}
-                        >
-                          {hasUnread ? '● Chat' : 'Chat'}
-                        </button>
+                        <p className="text-xs text-slate-500">{new Date(t.createdAt).toLocaleString()}</p>
                       </div>
-                      <p className="text-xs text-slate-500">{new Date(t.createdAt).toLocaleString()}</p>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {(chatMode === 'broadcast' || chatMode === 'direct') && (
               <div className="p-4 bg-slate-800/50 rounded-xl border border-slate-700">
@@ -1813,9 +1905,38 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
       {/* Modal Chat */}
       {chatTicketId && (
         <div className="fixed inset-0 z-[60] flex flex-col bg-black/90 p-4">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-bold">Chat hỗ trợ</h3>
-            <button onClick={() => setChatTicketId(null)} className="p-2">
+          <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-3">
+              <h3 className="text-lg font-bold text-amber-400">Chat hỗ trợ</h3>
+              {isSuperAdminUi && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const t = tickets.find((tk) => tk.id === chatTicketId);
+                      if (t) handleToggleHideTicket(t.id, !!t.isHidden);
+                    }}
+                    className={`p-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 transition-all ${
+                      tickets.find((tk) => tk.id === chatTicketId)?.isHidden
+                        ? 'bg-violet-950/40 text-violet-400 border-violet-500/30 hover:bg-violet-900/30'
+                        : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                    }`}
+                    title={tickets.find((tk) => tk.id === chatTicketId)?.isHidden ? 'Hiện cuộc hội thoại' : 'Ẩn cuộc hội thoại (Bóng ma)'}
+                  >
+                    {tickets.find((tk) => tk.id === chatTicketId)?.isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                    <span>{tickets.find((tk) => tk.id === chatTicketId)?.isHidden ? 'Đang ẩn' : 'Ẩn hội thoại'}</span>
+                  </button>
+                  <button
+                    onClick={() => handleDeleteTicket(chatTicketId)}
+                    className="p-1.5 bg-red-950/40 text-red-500 hover:bg-red-900/30 rounded-lg border border-red-500/30 transition-all flex items-center gap-1 text-xs font-semibold"
+                    title="Xóa cuộc hội thoại"
+                  >
+                    <Trash2 size={14} />
+                    <span>Xóa hội thoại</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <button onClick={() => setChatTicketId(null)} className="p-2 text-xl font-bold text-slate-400 hover:text-white">
               ✕
             </button>
           </div>
@@ -1849,6 +1970,15 @@ export function AdminDashboard({ onBack }: { onBack: () => void }) {
                     />
                   ))}
                 <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1.5 justify-end">
+                  {isSuperAdminUi && (
+                    <button
+                      onClick={() => handleDeleteMessage(m.id)}
+                      className="text-red-500 hover:text-red-400 transition-colors p-1"
+                      title="Xóa tin nhắn"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                   <span>{new Date(m.createdAt).toLocaleTimeString()}</span>
                   {m.senderRole === 'admin' && (
                     <span className={m.readAt ? 'text-emerald-400 font-medium' : 'text-slate-500'}>

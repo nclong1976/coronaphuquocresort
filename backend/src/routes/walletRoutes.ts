@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
+import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { getBalance, executeLedgerEntry, ensureWallet } from '../ledger/walletService.js';
 import { getBets } from '../ledger/transactionService.js';
@@ -93,10 +94,27 @@ router.post('/deposit-request', authMiddleware, async (req: AuthRequest, res) =>
 router.post('/withdraw-request', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.userId!;
-    const { amount, bankInfo } = req.body;
+    const { amount, withdrawPassword, bankInfo } = req.body;
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) {
       res.status(400).json({ error: 'Invalid amount' });
+      return;
+    }
+
+    // Verify withdrawal PIN / password
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { withdrawPassword: true },
+    });
+
+    if (!user || !user.withdrawPassword) {
+      res.status(400).json({ error: 'Vui lòng cài đặt thông tin ngân hàng & mật khẩu rút tiền trước!' });
+      return;
+    }
+
+    const pinMatch = await bcrypt.compare(String(withdrawPassword || ''), user.withdrawPassword);
+    if (!pinMatch) {
+      res.status(400).json({ error: 'Mật khẩu rút tiền không chính xác!' });
       return;
     }
 

@@ -1,7 +1,7 @@
 /**
  * Payout Control v8 — đồng bộ với admin-dashboard/GamesPage, dùng adminClient.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { admin } from '../api/adminClient';
 
 const FULL_DAY = { startTime: '00:00', endTime: '23:59' };
@@ -105,11 +105,14 @@ function tigerPreview(banker: number, player: number, tie: number) {
   return { heB, heP, rtp };
 }
 
-function sicPreview(big: number, small: number, triple: number) {
-  const heTaixiu = Math.max(0.5, 2.78 - (big + small - 2) * 35).toFixed(2);
-  const heTriple = Math.max(10, 30 + (30 - triple) * 0.7).toFixed(0);
+function sicPreview(big: number, small: number) {
+  const ratioBig = big + 1;
+  const ratioSmall = small + 1;
+  const heBig = 100 - ratioBig * 50;
+  const heSmall = 100 - ratioSmall * 50;
+  const heTaixiu = ((heBig + heSmall) / 2).toFixed(2);
   const rtp = (100 - parseFloat(heTaixiu)).toFixed(1);
-  return { heTaixiu, heTriple, rtp };
+  return { heTaixiu, rtp };
 }
 
 function dragonPreview(dragon: number, tiger: number, tie: number) {
@@ -177,13 +180,24 @@ export function CasinoPayoutControl({
   const [payoutLive, setPayoutLive] = useState<Awaited<ReturnType<typeof admin.payoutLive>> | null>(null);
   const [scheduleWeekdays, setScheduleWeekdays] = useState(() => new Set([1, 2, 3, 4, 5, 6, 7]));
 
+  const [serverClockMs, setServerClockMs] = useState<number | null>(null);
+  const serverClockRef = useRef<{ epoch: number; localAt: number } | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
       admin
         .payoutLive()
         .then((p) => {
-          if (!cancelled) setPayoutLive(p);
+          if (!cancelled) {
+            setPayoutLive(p);
+            // Sync server clock
+            if ((p as any).serverTimeEpoch) {
+              const epoch = (p as any).serverTimeEpoch as number;
+              serverClockRef.current = { epoch, localAt: Date.now() };
+              setServerClockMs(epoch);
+            }
+          }
         })
         .catch(() => {});
     };
@@ -193,6 +207,16 @@ export function CasinoPayoutControl({
       cancelled = true;
       clearInterval(id);
     };
+  }, []);
+
+  /** Tick the server clock every second using drift-corrected offset */
+  useEffect(() => {
+    const t = setInterval(() => {
+      const ref = serverClockRef.current;
+      if (!ref) return;
+      setServerClockMs(ref.epoch + (Date.now() - ref.localAt));
+    }, 1000);
+    return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
@@ -225,7 +249,7 @@ export function CasinoPayoutControl({
   const sicBoostOn = games.find((g) => g.gameId === 'sicbo')?.payoutBoost ?? false;
 
   const tp = useMemo(() => tigerPreview(tBanker, tPlayer, tTie), [tBanker, tPlayer, tTie]);
-  const sp = useMemo(() => sicPreview(sBig, sSmall, sTriple), [sBig, sSmall, sTriple]);
+  const sp = useMemo(() => sicPreview(sBig, sSmall), [sBig, sSmall]);
   const dp = useMemo(() => dragonPreview(dDragon, dTiger, dTie), [dDragon, dTiger, dTie]);
   const bp = useMemo(() => baicaoPreview(bcPlayer, bcBanker), [bcPlayer, bcBanker]);
 
@@ -313,7 +337,6 @@ export function CasinoPayoutControl({
   function resetSic() {
     setSBig(1);
     setSSmall(1);
-    setSTriple(30);
   }
 
   /** Về 1:1 tiêu chuẩn: xóa GamePayoutConfig Sic Bo + tắt payoutBoost → đồng bộ người chơi ngay (socket). */
@@ -440,7 +463,14 @@ export function CasinoPayoutControl({
 
       {payoutLive && (
         <div className="mx-3 mb-3 p-3 rounded-xl border border-[#00e0ff]/40 bg-[#00e0ff]/10 text-[11px] text-[#c8c8e6] leading-relaxed">
-          <div className="font-bold text-[#00e0ff] mb-1">Đang áp dụng trên server (giống người chơi)</div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="font-bold text-[#00e0ff]">Đang áp dụng trên server (giống người chơi)</span>
+            {serverClockMs && (
+              <span className="font-mono text-[#00ff99] text-[11px] tabular-nums">
+                🕐 {new Date(serverClockMs).toLocaleTimeString('vi-VN', { hour12: false })}
+              </span>
+            )}
+          </div>
           <div>
             Giờ {payoutLive.serverTime} · Hôm nay: {WD_OPTS.find((x) => x.v === payoutLive.isoWeekday)?.l ?? payoutLive.isoWeekday}
           </div>
@@ -503,17 +533,17 @@ export function CasinoPayoutControl({
               {warnRtp(tp.rtp) && <div className="mt-2 p-2 rounded-lg bg-[#ff3366]/20 text-[#ff3366] font-bold">{warnRtp(tp.rtp)}</div>}
             </div>
             <div className="flex flex-wrap gap-2 mt-4">
-              <button type="button" className="flex-1 min-w-[100px] py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm" onClick={() => activateTiger()} disabled={pending}>
+              <button type="button" className="flex-1 min-w-[100px] py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm transition-all duration-150 hover:brightness-110 active:scale-95" onClick={() => activateTiger()} disabled={pending}>
                 Kích hoạt ngay
               </button>
               <button
                 type="button"
-                className="flex-1 min-w-[100px] py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm bg-transparent"
+                className="flex-1 min-w-[100px] py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm bg-transparent transition-all duration-150 hover:bg-[#00e0ff]/10 active:scale-95"
                 onClick={() => openScheduleSheet('Tiger Baccarat')}
               >
                 Lịch hẹn giờ
               </button>
-              <button type="button" className="min-w-[80px] py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm" onClick={resetTiger}>
+              <button type="button" className="min-w-[80px] py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm transition-all duration-150 hover:bg-[#ff5588] active:scale-95" onClick={resetTiger}>
                 Default
               </button>
             </div>
@@ -548,27 +578,23 @@ export function CasinoPayoutControl({
                   onChange={(e) => setSSmall(parseLocaleNumber(e.target.value, sSmall))}
                 />
               </div>
-              <div className="sm:col-span-2">
-                <label className="block text-xs text-[#a0a0cc] mb-1 font-medium">Any Triple × (minh họa)</label>
-                <input type="number" step={1} min={15} max={50} className={inputCls} value={sTriple} onChange={(e) => setSTriple(parseFloat(e.target.value) || 30)} />
-              </div>
             </div>
             <div className="mt-4 p-3 rounded-2xl border border-[#00e0ff]/30 bg-[#00e0ff]/10 text-xs">
-              <strong className="text-[#00e0ff]">Preview:</strong> Tài/Xỉu HE ~{sp.heTaixiu}% · Triple ~{sp.heTriple}% · RTP ~{sp.rtp}%
+              <strong className="text-[#00e0ff]">Preview:</strong> Tài/Xỉu HE ~{sp.heTaixiu}% · RTP ~{sp.rtp}%
               {warnRtp(sp.rtp) && <div className="mt-2 p-2 rounded-lg bg-[#ff3366]/20 text-[#ff3366] font-bold">{warnRtp(sp.rtp)}</div>}
             </div>
             <div className="flex flex-wrap gap-2 mt-4">
-              <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm" onClick={() => activateSic()} disabled={pending}>
+              <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm transition-all duration-150 hover:brightness-110 active:scale-95" onClick={() => activateSic()} disabled={pending}>
                 Kích hoạt ngay
               </button>
               <button
                 type="button"
-                className="flex-1 py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm"
+                className="flex-1 py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm transition-all duration-150 hover:bg-[#00e0ff]/10 active:scale-95"
                 onClick={() => openScheduleSheet('Sic Bo')}
               >
                 Lịch hẹn giờ
               </button>
-              <button type="button" className="py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm" onClick={() => void defaultSicBoStandard()} disabled={pending}>
+              <button type="button" className="py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm transition-all duration-150 hover:bg-[#ff5588] active:scale-95" onClick={() => void defaultSicBoStandard()} disabled={pending}>
                 Default
               </button>
             </div>
@@ -598,17 +624,17 @@ export function CasinoPayoutControl({
               {warnRtp(dp.rtp) && <div className="mt-2 p-2 rounded-lg bg-[#ff3366]/20 text-[#ff3366] font-bold">{warnRtp(dp.rtp)}</div>}
             </div>
             <div className="flex flex-wrap gap-2 mt-4">
-              <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm" onClick={() => activateDragon()} disabled={pending}>
+              <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm transition-all duration-150 hover:brightness-110 active:scale-95" onClick={() => activateDragon()} disabled={pending}>
                 Kích hoạt ngay
               </button>
               <button
                 type="button"
-                className="flex-1 py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm"
+                className="flex-1 py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm transition-all duration-150 hover:bg-[#00e0ff]/10 active:scale-95"
                 onClick={() => openScheduleSheet('Dragon Tiger')}
               >
                 Lịch hẹn giờ
               </button>
-              <button type="button" className="py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm" onClick={resetDragon}>
+              <button type="button" className="py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm transition-all duration-150 hover:bg-[#ff5588] active:scale-95" onClick={resetDragon}>
                 Default
               </button>
             </div>
@@ -634,17 +660,17 @@ export function CasinoPayoutControl({
               {warnRtp(bp.rtp) && <div className="mt-2 p-2 rounded-lg bg-[#ff3366]/20 text-[#ff3366] font-bold">{warnRtp(bp.rtp)}</div>}
             </div>
             <div className="flex flex-wrap gap-2 mt-4">
-              <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm" onClick={() => activateBaicao()} disabled={pending}>
+              <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm transition-all duration-150 hover:brightness-110 active:scale-95" onClick={() => activateBaicao()} disabled={pending}>
                 Kích hoạt ngay
               </button>
               <button
                 type="button"
-                className="flex-1 py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm"
+                className="flex-1 py-3 rounded-xl border-2 border-[#00e0ff] text-[#00e0ff] font-bold text-sm transition-all duration-150 hover:bg-[#00e0ff]/10 active:scale-95"
                 onClick={() => openScheduleSheet('Bài Cào')}
               >
                 Lịch hẹn giờ
               </button>
-              <button type="button" className="py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm" onClick={resetBaicao}>
+              <button type="button" className="py-3 px-3 rounded-xl bg-[#ff3366] text-white font-bold text-sm transition-all duration-150 hover:bg-[#ff5588] active:scale-95" onClick={resetBaicao}>
                 Default
               </button>
             </div>
@@ -652,6 +678,49 @@ export function CasinoPayoutControl({
           </div>
         )}
       </div>
+
+      {/* Schedules list – shows all non-full-day configs with delete button */}
+      {configs.length > 0 && (
+        <div className="mx-3 mt-6">
+          <h3 className="text-xs font-bold text-[#a0a0cc] uppercase tracking-widest mb-2">Danh sách lịch hẹn giờ</h3>
+          <div className="space-y-2">
+            {configs
+              .filter((c) => !(c.startTime === '00:00' && c.endTime === '23:59'))
+              .map((c) => (
+                <div key={c.id} className="flex items-center gap-2 p-2.5 rounded-xl bg-[#141426] border border-[#2a2a44]">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-[#00e0ff] truncate">{c.gameId} · {c.optionKey}</p>
+                    <p className="text-[10px] text-[#a0a0cc]">{c.startTime}–{c.endTime} · {formatWdList(c.weekdays)}</p>
+                  </div>
+                  <span className="text-xs font-mono text-[#00ff99] shrink-0">×{Number(c.ratio).toFixed(2)}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 px-2 py-1 rounded-lg bg-[#ff3366]/20 text-[#ff3366] text-xs font-bold transition-all duration-150 hover:bg-[#ff3366]/40 active:scale-95"
+                    onClick={async () => {
+                      if (!confirm(`Xóa lịch ${c.gameId} ${c.startTime}–${c.endTime}?`)) return;
+                      try {
+                        await (admin as any).deletePayoutSchedule({
+                          gameId: c.gameId,
+                          startTime: c.startTime,
+                          endTime: c.endTime,
+                          weekdaysSig: c.weekdaysSig,
+                        });
+                        await onReload();
+                      } catch (e) {
+                        alert((e as Error).message);
+                      }
+                    }}
+                  >
+                    Xóa
+                  </button>
+                </div>
+              ))}
+            {configs.filter((c) => !(c.startTime === '00:00' && c.endTime === '23:59')).length === 0 && (
+              <p className="text-[11px] text-[#666] text-center py-2">Chưa có lịch hẹn giờ nào</p>
+            )}
+          </div>
+        </div>
+      )}
 
       <div
         className={`fixed inset-0 z-[100] bg-black/50 transition-opacity ${sheetOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
@@ -704,10 +773,10 @@ export function CasinoPayoutControl({
         </div>
         <p className="text-[10px] text-[#666] mb-4">Chọn đủ 7 thứ = mọi ngày. Bỏ bớt thứ = chỉ các ngày đó mới áp dụng khung giờ này.</p>
         <div className="flex gap-2">
-          <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm" onClick={saveSchedule} disabled={pending}>
-            Lưu & Lên lịch
+          <button type="button" className="flex-1 py-3 rounded-xl bg-[#00e0ff] text-black font-bold text-sm transition-all duration-150 hover:brightness-110 active:scale-95" onClick={saveSchedule} disabled={pending}>
+            Lưu &amp; Lên lịch
           </button>
-          <button type="button" className="py-3 px-5 rounded-xl bg-[#ff3366] text-white font-bold text-sm" onClick={() => setSheetOpen(false)}>
+          <button type="button" className="py-3 px-5 rounded-xl bg-[#ff3366] text-white font-bold text-sm transition-all duration-150 hover:bg-[#ff5588] active:scale-95" onClick={() => setSheetOpen(false)}>
             Hủy
           </button>
         </div>

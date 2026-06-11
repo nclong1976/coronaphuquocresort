@@ -31,7 +31,7 @@ export function UserDetailPage() {
       </button>
 
       <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <div className="flex justify-between items-start">
+        <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-start gap-4">
           <div>
             <h2 className="text-2xl font-bold">{user.username}</h2>
             <p className="text-slate-400">{user.email}</p>
@@ -39,9 +39,9 @@ export function UserDetailPage() {
           </div>
           <button
             onClick={() => banMutation.mutate(!user.isBanned)}
-            className={`px-4 py-2 rounded-lg ${user.isBanned ? 'bg-green-600' : 'bg-red-600'}`}
+            className={`px-4 py-2 rounded-lg ${user.isBanned ? 'bg-green-600' : 'bg-red-600'} w-full sm:w-auto text-center flex items-center justify-center`}
           >
-            {user.isBanned ? <><Shield size={18} className="inline mr-2" />Unban</> : <><Ban size={18} className="inline mr-2" />Ban</>}
+            {user.isBanned ? <><Shield size={18} className="mr-2" />Unban</> : <><Ban size={18} className="mr-2" />Ban</>}
           </button>
         </div>
       </div>

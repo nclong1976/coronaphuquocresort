@@ -134,4 +134,18 @@ export const adminApi = {
       method: 'POST',
       body: JSON.stringify({ ticketId, content }),
     }),
+  markTicketAsRead: (ticketId: string) =>
+    api<{ success: boolean }>(`/api/support/tickets/${ticketId}/read`, {
+      method: 'POST',
+    }),
+  me: () =>
+    api<{ user: { id: string; email: string; username: string; fullName: string; role: string } }>('/api/auth/me'),
+  deleteTicket: (ticketId: string) =>
+    api<{ success: boolean }>(`/api/support/tickets/${ticketId}`, {
+      method: 'DELETE',
+    }),
+  deleteMessage: (messageId: string) =>
+    api<{ success: boolean }>(`/api/support/messages/${messageId}`, {
+      method: 'DELETE',
+    }),
 };

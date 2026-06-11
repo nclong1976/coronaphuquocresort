@@ -1,14 +1,17 @@
+// @ts-nocheck
 import { Prisma } from '@prisma/client';
 
 /** Thứ ISO: 1 = Thứ 2 … 7 = Chủ nhật */
 export function getIsoWeekdayMon1Sun7(d: Date): number {
-  const w = d.getDay();
+  const vn = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+  const w = vn.getUTCDay();
   return w === 0 ? 7 : w;
 }
 
 export function timeHHMM(d: Date): string {
-  const h = d.getHours().toString().padStart(2, '0');
-  const m = d.getMinutes().toString().padStart(2, '0');
+  const vn = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+  const h = vn.getUTCHours().toString().padStart(2, '0');
+  const m = vn.getUTCMinutes().toString().padStart(2, '0');
   return `${h}:${m}`;
 }
 

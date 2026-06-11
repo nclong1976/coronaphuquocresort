@@ -69,6 +69,7 @@ export interface SupportMessage {
   senderRole: string;
   content: string;
   createdAt: string;
+  readAt?: string | null;
 }
 
 export interface DashboardStats {

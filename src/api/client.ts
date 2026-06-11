@@ -50,10 +50,10 @@ export const walletApi = {
       method: 'POST',
       body: JSON.stringify({ amount, method, reference }),
     }),
-  withdrawRequest: (amount: number, bankInfo?: object) =>
+  withdrawRequest: (amount: number, withdrawPassword?: string, bankInfo?: object) =>
     api<{ id: string; amount: number; status: string; message: string }>('/api/wallet/withdraw-request', {
       method: 'POST',
-      body: JSON.stringify({ amount, bankInfo }),
+      body: JSON.stringify({ amount, withdrawPassword, bankInfo }),
     }),
   getDepositRequests: () => api<{ requests: Array<{ id: string; amount: number; status: string; createdAt: string }> }>('/api/wallet/deposit-requests'),
   getWithdrawRequests: () => api<{ requests: Array<{ id: string; amount: number; status: string; createdAt: string }> }>('/api/wallet/withdraw-requests'),
@@ -205,6 +205,10 @@ export const supportApi = {
           ? { attachmentUrl: opts.attachmentUrl, attachmentType: opts.attachmentType || 'image' }
           : {}),
       }),
+    }),
+  markTicketAsRead: (ticketId: string) =>
+    api<{ success: boolean }>(`/api/support/tickets/${ticketId}/read`, {
+      method: 'POST',
     }),
 };
 

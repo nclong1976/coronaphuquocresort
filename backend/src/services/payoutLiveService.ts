@@ -29,6 +29,7 @@ export async function buildAdminPayoutLivePayload() {
 
   return {
     serverTime: timeHHMM(at),
+    serverTimeEpoch: at.getTime(),
     isoWeekday: getIsoWeekdayMon1Sun7(at),
     sicbo: sic,
     tigerbaccarat: { PLAYER: tP, BANKER: tB, TIE: tT },

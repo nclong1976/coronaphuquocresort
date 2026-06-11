@@ -3,6 +3,8 @@ import { Server } from 'socket.io';
 import { verifyToken } from '../services/authService.js';
 import { PrismaClient } from '@prisma/client';
 
+import crypto from 'crypto';
+
 const prisma = new PrismaClient();
 
 export function initSocket(httpServer: HttpServer) {
@@ -41,33 +43,79 @@ export function initSocket(httpServer: HttpServer) {
       io.to('admin').emit('user_online', { userId });
     }
 
-    socket.on('support_message', async (data: { ticketId: string; content: string }) => {
+    const handleSupportMessage = async (data: {
+      ticketId: string;
+      content: string;
+      attachmentUrl?: string | null;
+      attachmentType?: string | null;
+      tempId?: string | null;
+    }) => {
       if (!userId) return;
       const ticket = await prisma.supportTicket.findUnique({ where: { id: data.ticketId } });
-      if (!ticket || ticket.userId !== userId && !isAdmin) return;
+      if (!ticket || (ticket.userId !== userId && !isAdmin)) return;
 
-      const msg = await prisma.supportMessage.create({
-        data: {
-          ticketId: data.ticketId,
-          senderId: userId,
-          senderRole: isAdmin ? 'admin' : 'user',
-          content: data.content,
-        },
-      });
+      const messageId = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+      const contentStr = data.content || (data.attachmentUrl ? '📷 Hình ảnh đính kèm' : '');
 
       const payload = {
         ticketId: data.ticketId,
+        tempId: data.tempId ?? null,
         message: {
-          id: msg.id,
-          content: msg.content,
-          senderRole: msg.senderRole,
-          createdAt: msg.createdAt,
-          attachmentUrl: msg.attachmentUrl,
-          attachmentType: msg.attachmentType,
+          id: messageId,
+          content: contentStr,
+          senderRole: isAdmin ? 'admin' : 'user',
+          createdAt,
+          attachmentUrl: data.attachmentUrl ?? null,
+          attachmentType: data.attachmentType ?? null,
         },
       };
+
+      // 1. Broadcast immediately (Real-time)
       io.to(`user:${ticket.userId}`).emit('support_message', payload);
       io.to('admin').emit('support_message', payload);
+
+      // Also emit receive_message for compatibility
+      io.to(`user:${ticket.userId}`).emit('receive_message', payload);
+      io.to('admin').emit('receive_message', payload);
+
+      // 2. Insert into PostgreSQL asynchronously (Write-Behind / Async Logging)
+      prisma.supportMessage.create({
+        data: {
+          id: messageId,
+          ticketId: data.ticketId,
+          senderId: userId,
+          senderRole: isAdmin ? 'admin' : 'user',
+          content: contentStr,
+          attachmentUrl: data.attachmentUrl ?? null,
+          attachmentType: data.attachmentType ?? null,
+          createdAt,
+        },
+      }).catch((err) => {
+        console.error('[Async DB Insert Error - supportMessage.create]:', err);
+      });
+
+      // 3. Update support ticket updatedAt
+      prisma.supportTicket.update({
+        where: { id: data.ticketId },
+        data: { updatedAt: new Date(createdAt) },
+      }).catch(() => {});
+    };
+
+    socket.on('support_message', handleSupportMessage);
+
+    socket.on('send_message', (data: any) => {
+      const ticketId = data.ticketId || data.roomId || data.room_id;
+      const content = data.content || data.message_text || data.messageText;
+      if (ticketId) {
+        handleSupportMessage({
+          ticketId,
+          content: content || '',
+          attachmentUrl: data.attachmentUrl,
+          attachmentType: data.attachmentType,
+          tempId: data.tempId,
+        });
+      }
     });
 
     // Chat trực tiếp bàn Sic Bo - join room khi vào game

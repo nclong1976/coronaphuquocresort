@@ -1,25 +1,97 @@
 import { useState, useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../services/api';
 import { useSocket } from '../hooks/useSocket';
-import { Send, MessageCircle } from 'lucide-react';
+import { Send, MessageCircle, ArrowLeft, Trash2 } from 'lucide-react';
+
+interface SupportChatInputProps {
+  onSend: (content: string) => void;
+  disabled?: boolean;
+}
+
+function SupportChatInput({ onSend, disabled }: SupportChatInputProps) {
+  const [text, setText] = useState('');
+
+  const handleSend = () => {
+    if (!text.trim() || disabled) return;
+    onSend(text.trim());
+    setText('');
+  };
+
+  return (
+    <div className="p-4 border-t border-slate-800 flex gap-2">
+      <input
+        type="text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+        placeholder="Type a message..."
+        disabled={disabled}
+        className="flex-1 px-4 py-2 bg-slate-800 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none disabled:opacity-50"
+      />
+      <button
+        onClick={handleSend}
+        disabled={disabled}
+        className="p-2 bg-amber-600 rounded-lg disabled:opacity-50 hover:bg-amber-700 active:scale-95 transition-all shrink-0 flex items-center justify-center"
+      >
+        <Send size={20} />
+      </button>
+    </div>
+  );
+}
 
 export function SupportChatPage() {
   const [selectedTicket, setSelectedTicket] = useState<string | null>(null);
-  const [message, setMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const { socket } = useSocket();
+  const [localMessages, setLocalMessages] = useState<any[]>([]);
 
   const { data: ticketsData } = useQuery({
     queryKey: ['support-tickets'],
     queryFn: () => adminApi.tickets(),
   });
 
-  const sendMutation = useMutation({
-    mutationFn: ({ ticketId, content }: { ticketId: string; content: string }) => adminApi.sendMessage(ticketId, content),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['support-tickets'] }),
+  const { data: meData } = useQuery({
+    queryKey: ['admin-profile'],
+    queryFn: () => adminApi.me(),
   });
+  const isSuperAdmin = meData?.user?.role === 'super_admin';
+
+  const handleDeleteTicket = async (ticketId: string) => {
+    if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ cuộc hội thoại này? Hành động này không thể hoàn tác.')) return;
+    try {
+      await adminApi.deleteTicket(ticketId);
+      setSelectedTicket(null);
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    } catch (err) {
+      alert('Lỗi khi xóa cuộc hội thoại: ' + (err as Error).message);
+    }
+  };
+
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!confirm('Bạn có chắc chắn muốn xóa tin nhắn này?')) return;
+    try {
+      await adminApi.deleteMessage(messageId);
+      // Update query cache instantly
+      queryClient.setQueryData(['support-tickets'], (old: any) => {
+        if (!old || !old.tickets) return old;
+        return {
+          ...old,
+          tickets: old.tickets.map((t: any) => {
+            if (t.id !== selectedTicket) return t;
+            return {
+              ...t,
+              messages: (t.messages || []).filter((msg: any) => msg.id !== messageId),
+            };
+          }),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    } catch (err) {
+      alert('Lỗi khi xóa tin nhắn: ' + (err as Error).message);
+    }
+  };
 
   const tickets = ticketsData?.tickets || [];
   const ticket = tickets.find((t) => t.id === selectedTicket) || tickets[0];
@@ -28,31 +100,196 @@ export function SupportChatPage() {
     if (!selectedTicket && tickets[0]) setSelectedTicket(tickets[0].id);
   }, [tickets, selectedTicket]);
 
+  // Sync messages from React Query cache while preserving pending optimistic messages and socket messages not yet in DB
+  useEffect(() => {
+    if (ticket) {
+      const serverMsgs = ticket.messages || [];
+      setLocalMessages((prev) => {
+        const merged = [...serverMsgs];
+        for (const pm of prev) {
+          // If the message is in prev but not in serverMsgs, keep it to prevent race conditions with async DB writes.
+          const exists = merged.some((sm) => {
+            if (sm.id === pm.id) return true;
+            if (String(pm.id).startsWith('tmp_') && sm.content === pm.content && sm.senderRole === pm.senderRole) {
+              return true;
+            }
+            return false;
+          });
+          if (!exists) {
+            // Only keep if it is a pending message OR very recently received (within 15s) to handle write lag
+            const isTmp = String(pm.id).startsWith('tmp_');
+            const isRecent = new Date(pm.createdAt).getTime() > Date.now() - 15000;
+            if (isTmp || isRecent) {
+              merged.push(pm);
+            }
+          }
+        }
+        return merged.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      });
+    } else {
+      setLocalMessages([]);
+    }
+  }, [ticket?.messages]);
+
+  // Mark selected ticket as read
+  useEffect(() => {
+    if (selectedTicket) {
+      adminApi.markTicketAsRead(selectedTicket)
+        .then(() => {
+          queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+        })
+        .catch(() => {});
+    }
+  }, [selectedTicket, ticket?.messages?.length, queryClient]);
+
+  // Listen for socket messages in real-time
   useEffect(() => {
     if (!socket) return;
-    const onMsg = () => queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    const onMsg = (payload: any) => {
+      // 1. Instantly update the React Query cache
+      queryClient.setQueryData(['support-tickets'], (old: any) => {
+        if (!old || !old.tickets) return old;
+        return {
+          ...old,
+          tickets: old.tickets.map((t: any) => {
+            if (t.id !== payload.ticketId) return t;
+            const msgs = t.messages || [];
+            let updatedMsgs = [...msgs];
+            let replaced = false;
+            if (payload.tempId) {
+              updatedMsgs = updatedMsgs.map((m) => {
+                if (m.id === payload.tempId) {
+                  replaced = true;
+                  return { ...m, ...payload.message };
+                }
+                return m;
+              });
+            }
+            if (!replaced && !updatedMsgs.some((m) => m.id === payload.message.id)) {
+              updatedMsgs.push(payload.message);
+            }
+            return {
+              ...t,
+              updatedAt: payload.message.createdAt,
+              messages: updatedMsgs,
+            };
+          }),
+        };
+      });
+
+      // 2. Perform a background invalidation to ensure eventual DB consistency
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+      
+      // 3. Update local messages state instantly
+      if (selectedTicket && payload.ticketId === selectedTicket) {
+        setLocalMessages((prev) => {
+          if (payload.tempId && prev.some((m) => m.id === payload.tempId)) {
+            return prev.map((m) => m.id === payload.tempId ? payload.message : m);
+          }
+          if (prev.some((m) => m.id === payload.message.id)) return prev;
+          return [...prev, payload.message];
+        });
+      }
+    };
+    const onRead = () => {
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    };
+
+    const onTicketDeleted = (payload: { ticketId: string }) => {
+      queryClient.setQueryData(['support-tickets'], (old: any) => {
+        if (!old || !old.tickets) return old;
+        return {
+          ...old,
+          tickets: old.tickets.filter((t: any) => t.id !== payload.ticketId),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+      if (selectedTicket === payload.ticketId) {
+        setSelectedTicket(null);
+      }
+    };
+
+    const onMsgDeleted = (payload: { ticketId: string; messageId: string }) => {
+      queryClient.setQueryData(['support-tickets'], (old: any) => {
+        if (!old || !old.tickets) return old;
+        return {
+          ...old,
+          tickets: old.tickets.map((t: any) => {
+            if (t.id !== payload.ticketId) return t;
+            return {
+              ...t,
+              messages: (t.messages || []).filter((m: any) => m.id !== payload.messageId),
+            };
+          }),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+      if (selectedTicket === payload.ticketId) {
+        setLocalMessages((prev) => prev.filter((m) => m.id !== payload.messageId));
+      }
+    };
+
     socket.on('support_message', onMsg);
+    socket.on('support_messages_read', onRead);
+    socket.on('support_ticket_deleted', onTicketDeleted);
+    socket.on('support_message_deleted', onMsgDeleted);
     return () => {
       socket.off('support_message', onMsg);
+      socket.off('support_messages_read', onRead);
+      socket.off('support_ticket_deleted', onTicketDeleted);
+      socket.off('support_message_deleted', onMsgDeleted);
     };
-  }, [socket, queryClient]);
+  }, [socket, selectedTicket, queryClient]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [ticket?.messages]);
+  }, [localMessages]);
 
-  const handleSend = () => {
-    if (!message.trim() || !ticket) return;
-    sendMutation.mutate({ ticketId: ticket.id, content: message });
-    setMessage('');
+  const handleSend = async (content: string) => {
+    if (!selectedTicket) return;
+
+    const tempId = `tmp_${Date.now()}`;
+    const newMsg = {
+      id: tempId,
+      content,
+      senderRole: 'admin',
+      createdAt: new Date().toISOString(),
+      readAt: null,
+    };
+
+    setLocalMessages((prev) => [...prev, newMsg]);
+
+    try {
+      if (socket && socket.connected) {
+        socket.emit('support_message', {
+          ticketId: selectedTicket,
+          content,
+          tempId,
+        });
+      } else {
+        const res = await adminApi.sendMessage(selectedTicket, content);
+        setLocalMessages((prev) =>
+          prev.map((m) => (m.id === tempId ? res.message : m))
+        );
+        queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+      }
+    } catch (err) {
+      setLocalMessages((prev) => prev.filter((m) => m.id !== tempId));
+      alert('Không thể gửi tin nhắn: ' + (err as Error).message);
+    }
   };
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Live Customer Support</h2>
+    <div className="space-y-4 md:space-y-6">
+      <h2 className="text-xl md:text-2xl font-bold">Live Customer Support</h2>
 
-      <div className="flex gap-4 h-[600px]">
-        <div className="w-80 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col">
+      <div className="flex flex-col md:flex-row gap-4 h-[calc(100vh-12rem)] md:h-[600px]">
+        {/* Conversations List - Hidden on mobile if a ticket is selected */}
+        <div
+          className={`w-full md:w-80 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col ${
+            selectedTicket ? 'hidden md:flex' : 'flex'
+          }`}
+        >
           <div className="p-4 border-b border-slate-800 font-semibold">Conversations</div>
           <div className="flex-1 overflow-y-auto">
             {tickets.map((t) => (
@@ -73,44 +310,77 @@ export function SupportChatPage() {
           </div>
         </div>
 
-        <div className="flex-1 bg-slate-900 rounded-xl border border-slate-800 flex flex-col overflow-hidden">
+        {/* Active Chat Pane - Hidden on mobile if no ticket is selected */}
+        <div
+          className={`flex-1 bg-slate-900 rounded-xl border border-slate-800 flex flex-col overflow-hidden ${
+            !selectedTicket ? 'hidden md:flex' : 'flex'
+          }`}
+        >
           {ticket ? (
             <>
-              <div className="p-4 border-b border-slate-800">
-                <p className="font-bold">{ticket.user?.username}</p>
-                <p className="text-sm text-slate-400">{ticket.user?.email}</p>
+              <div className="p-4 border-b border-slate-800 flex items-center">
+                {/* Back button for mobile */}
+                <button
+                  onClick={() => setSelectedTicket(null)}
+                  className="p-2 -ml-2 mr-2 text-slate-400 hover:text-white md:hidden shrink-0"
+                >
+                  <ArrowLeft size={20} />
+                </button>
+                <div className="min-w-0">
+                  <p className="font-bold truncate">{ticket.user?.username}</p>
+                  <p className="text-sm text-slate-400 truncate">{ticket.user?.email}</p>
+                </div>
+                {isSuperAdmin && (
+                  <button
+                    onClick={() => handleDeleteTicket(ticket.id)}
+                    className="ml-auto p-2 bg-red-950/40 text-red-500 hover:bg-red-900/30 rounded-lg border border-red-500/30 transition-all flex items-center gap-1.5 text-xs font-semibold shrink-0"
+                    title="Xóa cuộc hội thoại"
+                  >
+                    <Trash2 size={16} />
+                    <span className="hidden sm:inline">Xóa hội thoại</span>
+                  </button>
+                )}
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {ticket.messages.map((m) => (
+                {localMessages.map((m) => (
                   <div
                     key={m.id}
-                    className={`flex ${m.senderRole === 'admin' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex items-start gap-2 ${
+                      m.senderRole === 'admin' ? 'justify-end flex-row-reverse' : 'justify-start flex-row'
+                    }`}
                   >
                     <div
-                      className={`max-w-[70%] px-4 py-2 rounded-lg ${
+                      className={`max-w-[85%] sm:max-w-[70%] px-4 py-2 rounded-lg ${
                         m.senderRole === 'admin' ? 'bg-amber-600/30' : 'bg-slate-800'
                       }`}
                     >
-                      <p className="text-sm">{m.content}</p>
-                      <p className="text-xs text-slate-500 mt-1">{new Date(m.createdAt).toLocaleTimeString()}</p>
+                      <p className="text-sm break-words">{m.content}</p>
+                      <p className="text-xs text-slate-500 mt-1 flex items-center justify-end gap-1">
+                        <span>{new Date(m.createdAt).toLocaleTimeString()}</span>
+                        {m.senderRole === 'admin' && (
+                          <span className={m.readAt ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                            • {m.readAt ? 'Đã xem' : 'Đã gửi'}
+                          </span>
+                        )}
+                      </p>
                     </div>
+                    {isSuperAdmin && !String(m.id).startsWith('tmp_') && (
+                      <button
+                        onClick={() => handleDeleteMessage(m.id)}
+                        className="p-1.5 text-slate-500 hover:text-red-500 rounded hover:bg-slate-800 transition-all shrink-0 self-center"
+                        title="Xóa tin nhắn"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 ))}
                 <div ref={messagesEndRef} />
               </div>
-              <div className="p-4 border-t border-slate-800 flex gap-2">
-                <input
-                  type="text"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder="Type a message..."
-                  className="flex-1 px-4 py-2 bg-slate-800 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none"
-                />
-                <button onClick={handleSend} className="p-2 bg-amber-600 rounded-lg">
-                  <Send size={20} />
-                </button>
-              </div>
+              <SupportChatInput
+                onSend={handleSend}
+                disabled={false}
+              />
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-slate-500">Select a conversation</div>

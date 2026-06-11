@@ -16,8 +16,8 @@ export function useSupportSocket(token: string | null) {
     const url = resolveSocketUrl();
     const opts = {
       auth: { token },
-      // Polling trước khi dev/proxy chặn WebSocket (tránh lỗi "closed before established"); vẫn nâng cấp lên WS khi được
-      transports: ['polling', 'websocket'],
+      // Ưu tiên websocket trước để kết nối tức thì và giảm độ trễ, fallback về polling nếu bị chặn
+      transports: ['websocket', 'polling'],
       reconnectionAttempts: 8,
       reconnectionDelay: 500,
       reconnectionDelayMax: 4000,

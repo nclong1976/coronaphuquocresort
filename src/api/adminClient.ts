@@ -205,4 +205,11 @@ export const admin = {
       method: 'POST',
       body: JSON.stringify({ username }),
     }),
+  deletePayoutSchedule: (body: { gameId: string; startTime?: string; endTime?: string; weekdaysSig?: string }) =>
+    adminApi<{ success: boolean }>('/api/admin/games/payout-config/schedule', {
+      method: 'DELETE',
+      body: JSON.stringify(body),
+    }),
+  payoutConfigsForGame: (gameId: string) =>
+    adminApi<{ configs: Array<{ id: string; gameId: string; optionKey: string; ratio: number; startTime: string; endTime: string; weekdays?: number[] | null; weekdaysSig?: string }> }>(`/api/admin/games/payout-configs?gameId=${gameId}`),
 };

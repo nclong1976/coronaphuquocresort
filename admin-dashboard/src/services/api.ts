@@ -25,7 +25,8 @@ export async function login(email: string, password: string) {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
-  if ((res.user as any).role !== 'admin') throw new Error('Admin access required');
+  const role = (res.user as any).role;
+  if (role !== 'admin' && role !== 'super_admin') throw new Error('Admin access required');
   localStorage.setItem('admin_token', res.token);
   return res;
 }

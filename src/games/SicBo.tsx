@@ -145,7 +145,7 @@ export function SicBo({ onBack }: { onBack: () => void }) {
       setTempBets({ BIG: 0, SMALL: 0 });
       setConfirmedBets({ BIG: 0, SMALL: 0 });
       setIsConfirmed(false);
-      setSelectedZone(null);
+      setSelectedZones({ BIG: false, SMALL: false });
       setResult(null);
       setLidVisible(true);
       setDiceVisible(false);

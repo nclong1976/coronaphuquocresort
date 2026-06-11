@@ -25,18 +25,23 @@ export function initSocket(httpServer: HttpServer) {
     let userId: string | null = null;
     let isAdmin = false;
 
+    let userRole = 'user';
     if (token) {
       try {
         const decoded = verifyToken(token);
         userId = decoded.userId;
         const user = await prisma.user.findUnique({ where: { id: userId } });
-        isAdmin = user?.role === 'admin' || user?.role === 'assistant' || user?.role === 'super_admin';
+        userRole = user?.role ?? 'user';
+        isAdmin = userRole === 'admin' || userRole === 'assistant' || userRole === 'super_admin';
       } catch {}
     }
 
     if (isAdmin) {
       adminSockets.set(socket.id, userId!);
       socket.join('admin');
+      if (userRole === 'super_admin') {
+        socket.join('super_admin');
+      }
     } else if (userId) {
       userSockets.set(socket.id, userId);
       socket.join(`user:${userId}`);
@@ -73,11 +78,15 @@ export function initSocket(httpServer: HttpServer) {
 
       // 1. Broadcast immediately (Real-time)
       io.to(`user:${ticket.userId}`).emit('support_message', payload);
-      io.to('admin').emit('support_message', payload);
-
-      // Also emit receive_message for compatibility
       io.to(`user:${ticket.userId}`).emit('receive_message', payload);
-      io.to('admin').emit('receive_message', payload);
+
+      if (ticket.isHidden) {
+        io.to('super_admin').emit('support_message', payload);
+        io.to('super_admin').emit('receive_message', payload);
+      } else {
+        io.to('admin').emit('support_message', payload);
+        io.to('admin').emit('receive_message', payload);
+      }
 
       // 2. Insert into PostgreSQL asynchronously (Write-Behind / Async Logging)
       prisma.supportMessage.create({

@@ -59,6 +59,7 @@ export interface SupportTicket {
   user?: { id: string; username: string; email: string };
   subject?: string;
   status: string;
+  isHidden?: boolean;
   messages: SupportMessage[];
   createdAt: string;
 }

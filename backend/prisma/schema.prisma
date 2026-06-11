@@ -195,6 +195,7 @@ model SupportTicket {
   userId    String
   subject   String?
   status    String   @default("open") // open | in_progress | closed
+  isHidden  Boolean  @default(false)  // Chế độ ẩn đối với admin thường
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

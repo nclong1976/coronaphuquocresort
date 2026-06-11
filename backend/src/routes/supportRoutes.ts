@@ -126,8 +126,17 @@ router.get('/tickets', authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.userId!;
     const actor = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
     const isAdmin = isStaffSupportRole(actor?.role);
+    const isSuper = actor?.role === 'super_admin';
 
-    const where = isAdmin ? {} : { userId };
+    let where: any;
+    if (isSuper) {
+      where = {}; // Super Admin sees all tickets (hidden and visible)
+    } else if (isAdmin) {
+      where = { isHidden: false }; // Standard admins see only visible tickets
+    } else {
+      where = { userId }; // Regular user sees their own tickets
+    }
+
     const tickets = await prisma.supportTicket.findMany({
       where,
       orderBy: { updatedAt: 'desc' },
@@ -189,7 +198,8 @@ router.post('/tickets/:ticketId/read', authMiddleware, async (req: AuthRequest, 
 
     const io = (req as any).app?.get?.('io');
     if (io) {
-      io.to(isAdmin ? `user:${ticket.userId}` : 'admin').emit('support_messages_read', { ticketId });
+      const dest = ticket.isHidden ? 'super_admin' : 'admin';
+      io.to(isAdmin ? `user:${ticket.userId}` : dest).emit('support_messages_read', { ticketId });
     }
 
     res.json({ success: true });
@@ -259,7 +269,11 @@ router.post('/message', authMiddleware, async (req: AuthRequest, res) => {
         },
       };
       io.to(`user:${ticket.userId}`).emit('support_message', payload);
-      io.to('admin').emit('support_message', payload);
+      if (ticket.isHidden) {
+        io.to('super_admin').emit('support_message', payload);
+      } else {
+        io.to('admin').emit('support_message', payload);
+      }
     }
 
     res.json({
@@ -295,7 +309,11 @@ router.delete('/tickets/:ticketId', authMiddleware, async (req: AuthRequest, res
     const io = (req as any).app?.get?.('io');
     if (io) {
       io.to(`user:${ticket.userId}`).emit('support_ticket_deleted', { ticketId });
-      io.to('admin').emit('support_ticket_deleted', { ticketId });
+      if (ticket.isHidden) {
+        io.to('super_admin').emit('support_ticket_deleted', { ticketId });
+      } else {
+        io.to('admin').emit('support_ticket_deleted', { ticketId });
+      }
     }
 
     res.json({ success: true });
@@ -328,13 +346,56 @@ router.delete('/messages/:messageId', authMiddleware, async (req: AuthRequest, r
         ticketId: msg.ticketId,
         messageId,
       });
-      io.to('admin').emit('support_message_deleted', {
-        ticketId: msg.ticketId,
-        messageId,
-      });
+      if (msg.ticket.isHidden) {
+        io.to('super_admin').emit('support_message_deleted', {
+          ticketId: msg.ticketId,
+          messageId,
+        });
+      } else {
+        io.to('admin').emit('support_message_deleted', {
+          ticketId: msg.ticketId,
+          messageId,
+        });
+      }
     }
 
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** Toggle ticket hidden status (Super Admin only) */
+router.post('/tickets/:ticketId/toggle-hide', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.userId!;
+    const actor = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+    if (actor?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Super Admin permission required' });
+    }
+
+    const { ticketId } = req.params;
+    const { isHidden } = req.body as { isHidden?: boolean };
+    if (isHidden === undefined) {
+      return res.status(400).json({ error: 'isHidden (boolean) required' });
+    }
+
+    const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: { isHidden: !!isHidden },
+    });
+
+    const io = (req as any).app?.get?.('io');
+    if (io) {
+      const payload = { ticketId, isHidden: !!isHidden };
+      io.to('admin').emit('support_ticket_hidden_changed', payload);
+      io.to('super_admin').emit('support_ticket_hidden_changed', payload);
+    }
+
+    res.json({ success: true, isHidden: !!isHidden });
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });
   }

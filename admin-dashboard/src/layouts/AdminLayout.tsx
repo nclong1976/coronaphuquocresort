@@ -44,6 +44,12 @@ export function AdminLayout() {
     setMobileOpen(false);
   }, [location]);
 
+  const { data: meData } = useQuery({
+    queryKey: ['admin-profile'],
+    queryFn: () => adminApi.me(),
+  });
+  const isSuperAdmin = meData?.user?.role === 'super_admin';
+
   const { data: ticketsData } = useQuery({
     queryKey: ['support-tickets'],
     queryFn: () => adminApi.tickets(),
@@ -51,7 +57,8 @@ export function AdminLayout() {
   });
 
   const tickets = ticketsData?.tickets || [];
-  const unreadCount = tickets.filter((tk: any) => {
+  const visibleTickets = isSuperAdmin ? tickets : tickets.filter((t: any) => !t.isHidden);
+  const unreadCount = visibleTickets.filter((tk: any) => {
     const msgs = tk.messages || [];
     const last = msgs[msgs.length - 1];
     return last && last.senderRole === 'user' && tk.status !== 'closed';
@@ -105,6 +112,20 @@ export function AdminLayout() {
       queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
     };
 
+    const onTicketHiddenChanged = (payload: { ticketId: string; isHidden: boolean }) => {
+      queryClient.setQueryData(['support-tickets'], (old: any) => {
+        if (!old || !old.tickets) return old;
+        return {
+          ...old,
+          tickets: old.tickets.map((t: any) => {
+            if (t.id !== payload.ticketId) return t;
+            return { ...t, isHidden: payload.isHidden };
+          }),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    };
+
     const onMsgDeleted = (payload: { ticketId: string; messageId: string }) => {
       queryClient.setQueryData(['support-tickets'], (old: any) => {
         if (!old || !old.tickets) return old;
@@ -126,11 +147,13 @@ export function AdminLayout() {
     socket.on('support_messages_read', onMsg);
     socket.on('support_ticket_deleted', onTicketDeleted);
     socket.on('support_message_deleted', onMsgDeleted);
+    socket.on('support_ticket_hidden_changed', onTicketHiddenChanged);
     return () => {
       socket.off('support_message', onMsg);
       socket.off('support_messages_read', onMsg);
       socket.off('support_ticket_deleted', onTicketDeleted);
       socket.off('support_message_deleted', onMsgDeleted);
+      socket.off('support_ticket_hidden_changed', onTicketHiddenChanged);
     };
   }, [socket, queryClient]);
 

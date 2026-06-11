@@ -518,6 +518,12 @@ router.get('/transactions', async (req: AuthRequest, res) => {
     const hasLedgerFilter = Object.keys(whereLedger).length > 0;
     const takeEach = Math.min(800, limit * 3);
 
+    const caller = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { role: true },
+    });
+    const isSuper = caller?.role === 'super_admin';
+
     const auditDlg = getAdminAuditDelegate(prisma);
     const [ledger, audits] = await Promise.all([
       prisma.transaction.findMany({
@@ -529,6 +535,7 @@ router.get('/transactions', async (req: AuthRequest, res) => {
       hasLedgerFilter || !auditDlg
         ? Promise.resolve([] as any[])
         : auditDlg.findMany({
+            where: isSuper ? undefined : { admin: { role: { not: 'super_admin' } } },
             take: takeEach,
             orderBy: { createdAt: 'desc' },
             include: { admin: { select: { username: true } } },

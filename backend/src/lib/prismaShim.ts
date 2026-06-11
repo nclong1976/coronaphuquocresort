@@ -572,6 +572,7 @@ const supportTicket = {
     let q = sb.from('SupportTicket').select(sel);
     if (where?.userId) q = q.eq('userId', where.userId);
     if (where?.status) q = q.eq('status', where.status);
+    if (where?.isHidden !== undefined) q = q.eq('isHidden', where.isHidden);
     if (take) q = q.limit(take);
     if (skip) q = q.range(skip, skip + (take ?? 50) - 1);
     q = q.order('updatedAt', { ascending: false });
@@ -708,13 +709,15 @@ const adminAuditLog = {
     return await check(sb.from('AdminAuditLog').insert(row).select().single());
   },
   async findMany({ where, take, skip, orderBy, include }: any = {}) {
-    let q = sb.from('AdminAuditLog').select(include?.admin ? '*, User!adminId(username, email)' : '*');
+    // Luôn fetch User(role) để lọc bảo mật
+    let q = sb.from('AdminAuditLog').select('*, User!adminId(username, email, role)');
     if (where?.adminId) q = q.eq('adminId', where.adminId);
-    if (take) q = q.limit(take);
+    if (take) q = q.limit(take * 3); // Lấy nhiều hơn để lọc in-memory
     q = q.order('createdAt', { ascending: false });
     const { data, error } = await q;
     if (error) throw new Error(error.message);
-    return (data ?? []).map((row: any) => {
+    
+    let list = (data ?? []).map((row: any) => {
       const mapped = { ...row };
       if (row.User) {
         mapped.admin = row.User;
@@ -722,6 +725,15 @@ const adminAuditLog = {
       }
       return mapped;
     });
+
+    // Lọc bỏ logs của super_admin đối với admin thường
+    if (where?.admin?.role?.not) {
+      const excludeRole = where.admin.role.not;
+      list = list.filter((a) => a.admin?.role !== excludeRole);
+    }
+
+    if (take) list = list.slice(0, take);
+    return list;
   },
 };
 

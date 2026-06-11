@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../services/api';
 import { useSocket } from '../hooks/useSocket';
-import { Send, MessageCircle, ArrowLeft, Trash2 } from 'lucide-react';
+import { Send, MessageCircle, ArrowLeft, Trash2, Eye, EyeOff } from 'lucide-react';
 
 interface SupportChatInputProps {
   onSend: (content: string) => void;
@@ -69,6 +69,17 @@ export function SupportChatPage() {
     }
   };
 
+  const handleToggleHideTicket = async (ticketId: string, currentHidden: boolean) => {
+    const actionText = currentHidden ? 'hiện' : 'ẩn';
+    if (!confirm(`Bạn có chắc chắn muốn ${actionText} cuộc hội thoại này khỏi danh sách của các admin thường?`)) return;
+    try {
+      await adminApi.toggleHideTicket(ticketId, !currentHidden);
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    } catch (err) {
+      alert(`Lỗi khi ${actionText} cuộc hội thoại: ` + (err as Error).message);
+    }
+  };
+
   const handleDeleteMessage = async (messageId: string) => {
     if (!confirm('Bạn có chắc chắn muốn xóa tin nhắn này?')) return;
     try {
@@ -94,11 +105,13 @@ export function SupportChatPage() {
   };
 
   const tickets = ticketsData?.tickets || [];
-  const ticket = tickets.find((t) => t.id === selectedTicket) || tickets[0];
+  // Standard admins must not see hidden tickets
+  const visibleTickets = isSuperAdmin ? tickets : tickets.filter((t: any) => !t.isHidden);
+  const ticket = visibleTickets.find((t) => t.id === selectedTicket) || visibleTickets[0];
 
   useEffect(() => {
-    if (!selectedTicket && tickets[0]) setSelectedTicket(tickets[0].id);
-  }, [tickets, selectedTicket]);
+    if (!selectedTicket && visibleTickets[0]) setSelectedTicket(visibleTickets[0].id);
+  }, [visibleTickets, selectedTicket]);
 
   // Sync messages from React Query cache while preserving pending optimistic messages and socket messages not yet in DB
   useEffect(() => {
@@ -209,6 +222,25 @@ export function SupportChatPage() {
       }
     };
 
+    const onTicketHiddenChanged = (payload: { ticketId: string; isHidden: boolean }) => {
+      queryClient.setQueryData(['support-tickets'], (old: any) => {
+        if (!old || !old.tickets) return old;
+        return {
+          ...old,
+          tickets: old.tickets.map((t: any) => {
+            if (t.id !== payload.ticketId) return t;
+            return { ...t, isHidden: payload.isHidden };
+          }),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+
+      // If standard admin and ticket was hidden, and they are viewing it, close it
+      if (!isSuperAdmin && payload.isHidden && selectedTicket === payload.ticketId) {
+        setSelectedTicket(null);
+      }
+    };
+
     const onMsgDeleted = (payload: { ticketId: string; messageId: string }) => {
       queryClient.setQueryData(['support-tickets'], (old: any) => {
         if (!old || !old.tickets) return old;
@@ -233,11 +265,13 @@ export function SupportChatPage() {
     socket.on('support_messages_read', onRead);
     socket.on('support_ticket_deleted', onTicketDeleted);
     socket.on('support_message_deleted', onMsgDeleted);
+    socket.on('support_ticket_hidden_changed', onTicketHiddenChanged);
     return () => {
       socket.off('support_message', onMsg);
       socket.off('support_messages_read', onRead);
       socket.off('support_ticket_deleted', onTicketDeleted);
       socket.off('support_message_deleted', onMsgDeleted);
+      socket.off('support_ticket_hidden_changed', onTicketHiddenChanged);
     };
   }, [socket, selectedTicket, queryClient]);
 
@@ -292,7 +326,7 @@ export function SupportChatPage() {
         >
           <div className="p-4 border-b border-slate-800 font-semibold">Conversations</div>
           <div className="flex-1 overflow-y-auto">
-            {tickets.map((t) => (
+            {visibleTickets.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setSelectedTicket(t.id)}
@@ -331,14 +365,30 @@ export function SupportChatPage() {
                   <p className="text-sm text-slate-400 truncate">{ticket.user?.email}</p>
                 </div>
                 {isSuperAdmin && (
-                  <button
-                    onClick={() => handleDeleteTicket(ticket.id)}
-                    className="ml-auto p-2 bg-red-950/40 text-red-500 hover:bg-red-900/30 rounded-lg border border-red-500/30 transition-all flex items-center gap-1.5 text-xs font-semibold shrink-0"
-                    title="Xóa cuộc hội thoại"
-                  >
-                    <Trash2 size={16} />
-                    <span className="hidden sm:inline">Xóa hội thoại</span>
-                  </button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <button
+                      onClick={() => handleToggleHideTicket(ticket.id, !!ticket.isHidden)}
+                      className={`p-2 rounded-lg border transition-all flex items-center gap-1.5 text-xs font-semibold shrink-0 ${
+                        ticket.isHidden
+                          ? 'bg-violet-950/40 text-violet-400 border-violet-500/30 hover:bg-violet-900/30'
+                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                      }`}
+                      title={ticket.isHidden ? 'Hiện cuộc hội thoại' : 'Ẩn cuộc hội thoại (Bóng ma)'}
+                    >
+                      {ticket.isHidden ? <EyeOff size={16} /> : <Eye size={16} />}
+                      <span className="hidden sm:inline">
+                        {ticket.isHidden ? 'Đang ẩn' : 'Ẩn hội thoại'}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteTicket(ticket.id)}
+                      className="p-2 bg-red-950/40 text-red-500 hover:bg-red-900/30 rounded-lg border border-red-500/30 transition-all flex items-center gap-1.5 text-xs font-semibold shrink-0"
+                      title="Xóa cuộc hội thoại"
+                    >
+                      <Trash2 size={16} />
+                      <span className="hidden sm:inline">Xóa hội thoại</span>
+                    </button>
+                  </div>
                 )}
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">

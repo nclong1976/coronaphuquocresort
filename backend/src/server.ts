@@ -54,6 +54,28 @@ app.use('/api/support', supportRoutes);
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 
+app.get('/api/migrate-db-special-route', async (req, res) => {
+  try {
+    const pg = (await import('pg')).default;
+    const connectionString = process.env.DATABASE_URL || "postgresql://postgres:Pdn1001199x@db.rumaeeedqobxnlsosuku.supabase.co:5432/postgres";
+    const client = new pg.Client({
+      connectionString,
+      ssl: { rejectUnauthorized: false }
+    });
+    await client.connect();
+    await client.query('ALTER TABLE "SupportTicket" ADD COLUMN IF NOT EXISTS "isHidden" BOOLEAN DEFAULT false;');
+    const verify = await client.query(`
+      SELECT column_name, data_type 
+      FROM information_schema.columns 
+      WHERE table_name = 'SupportTicket' AND column_name = 'isHidden';
+    `);
+    await client.end();
+    res.json({ success: true, verify: verify.rows });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const { io } = initSocket(httpServer);
 setSocketIo(io);
 app.set('io', io);

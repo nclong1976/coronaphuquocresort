@@ -61,6 +61,58 @@ async function check(promise) {
   return parseDates(r.data);
 }
 
+function applyUserFilters(q, where) {
+  if (!where) return q;
+
+  if (where.AND && Array.isArray(where.AND)) {
+    for (const sub of where.AND) {
+      q = applyUserFilters(q, sub);
+    }
+  }
+
+  if (where.OR && Array.isArray(where.OR)) {
+    const orParts = [];
+    for (const sub of where.OR) {
+      const key = Object.keys(sub)[0];
+      const val = sub[key];
+      if (val && typeof val === 'object' && val.contains !== undefined) {
+        orParts.push(`${key}.ilike.%${val.contains}%`);
+      } else if (typeof val === 'string') {
+        orParts.push(`${key}.eq.${val}`);
+      }
+    }
+    if (orParts.length > 0) {
+      q = q.or(orParts.join(','));
+    }
+  }
+
+  if (where.isBanned !== undefined) {
+    q = q.eq('isBanned', where.isBanned);
+  }
+
+  if (where.role) {
+    if (typeof where.role === 'object' && where.role !== null) {
+      if (where.role.in) {
+        q = q.in('role', where.role.in);
+      } else if (where.role.not) {
+        q = q.neq('role', where.role.not);
+      }
+    } else {
+      q = q.eq('role', where.role);
+    }
+  }
+
+  if (where.pendingVipBonusLevel?.not === null) {
+    q = q.not('pendingVipBonusLevel', 'is', null);
+  }
+
+  if (where.vipBonusDueAt?.lte) {
+    q = q.lte('vipBonusDueAt', new Date(where.vipBonusDueAt.lte).toISOString());
+  }
+
+  return q;
+}
+
 // ---- User ------------------------------------------------------------------
 const user = {
   async findUnique({ where, select }) {
@@ -89,16 +141,7 @@ const user = {
   },
   async findMany({ where, select, take, skip, orderBy } = {}) {
     let q = sb.from('User').select(select ? Object.keys(select).join(',') : '*');
-    if (where?.isBanned !== undefined) q = q.eq('isBanned', where.isBanned);
-    if (where?.role) {
-      if (typeof where.role === 'object' && where.role !== null && where.role.in) {
-        q = q.in('role', where.role.in);
-      } else {
-        q = q.eq('role', where.role);
-      }
-    }
-    if (where?.pendingVipBonusLevel?.not === null) q = q.not('pendingVipBonusLevel', 'is', null);
-    if (where?.vipBonusDueAt?.lte) q = q.lte('vipBonusDueAt', new Date(where.vipBonusDueAt.lte).toISOString());
+    q = applyUserFilters(q, where);
     if (take) q = q.limit(take);
     if (skip) q = q.range(skip, skip + (take ?? 50) - 1);
     const { data, error } = await q;
@@ -116,8 +159,7 @@ const user = {
   },
   async count({ where } = {}) {
     let q = sb.from('User').select('*', { count: 'exact', head: true });
-    if (where?.role) q = q.eq('role', where.role);
-    if (where?.isBanned !== undefined) q = q.eq('isBanned', where.isBanned);
+    q = applyUserFilters(q, where);
     const { count, error } = await q;
     if (error) throw new Error(error.message);
     return count ?? 0;
@@ -606,6 +648,26 @@ const supportMessage = {
   async create({ data }) {
     const row = { ...data, id: data.id ?? uid(), createdAt: nowIso() };
     return await check(sb.from('SupportMessage').insert(row).select().single());
+  },
+  async findUnique({ where, include }) {
+    let sel = '*';
+    if (include) {
+      const parts = ['*'];
+      if (include.ticket) parts.push('SupportTicket(*)');
+      sel = parts.join(',');
+    }
+    const { data, error } = await sb.from('SupportMessage').select(sel).eq('id', where.id).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return null;
+    const mapped = { ...data };
+    if (data.SupportTicket) {
+      mapped.ticket = data.SupportTicket;
+      delete mapped.SupportTicket;
+    }
+    return mapped;
+  },
+  async delete({ where }) {
+    return await check(sb.from('SupportMessage').delete().eq('id', where.id).select().single());
   },
   async findMany({ where, take, skip } = {}) {
     let q = sb.from('SupportMessage').select('*');

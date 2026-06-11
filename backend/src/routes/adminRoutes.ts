@@ -524,6 +524,16 @@ router.get('/transactions', async (req: AuthRequest, res) => {
     });
     const isSuper = caller?.role === 'super_admin';
 
+    // Find super_admin IDs if caller is not super_admin
+    let superAdminIds: string[] = [];
+    if (!isSuper) {
+      const superAdmins = await prisma.user.findMany({
+        where: { role: 'super_admin' },
+        select: { id: true },
+      });
+      superAdminIds = superAdmins.map((u) => u.id);
+    }
+
     const auditDlg = getAdminAuditDelegate(prisma);
     const [ledger, audits] = await Promise.all([
       prisma.transaction.findMany({
@@ -542,8 +552,14 @@ router.get('/transactions', async (req: AuthRequest, res) => {
           }),
     ]);
 
+    // Filter ledger in memory if not super admin
+    let filteredLedger = ledger;
+    if (!isSuper && superAdminIds.length > 0) {
+      filteredLedger = ledger.filter((t) => !superAdminIds.includes(t.userId));
+    }
+
     const feed = [
-      ...ledger.map((t) => ({
+      ...filteredLedger.map((t) => ({
         kind: 'ledger' as const,
         id: t.id,
         userId: t.userId,
@@ -726,14 +742,31 @@ router.post('/super/promote-assistant', superAdminMiddleware, async (req: AuthRe
 router.get('/deposits', async (req: AuthRequest, res) => {
   try {
     const { status = 'pending' } = req.query;
+    const caller = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { role: true },
+    });
+    const isSuper = caller?.role === 'super_admin';
+
     const list = await prisma.depositRequest.findMany({
       where: status ? { status: String(status) } : {},
       orderBy: { createdAt: 'desc' },
       take: 100,
       include: { user: { select: { id: true, email: true, username: true, fullName: true } } },
     });
+
+    let filteredList = list;
+    if (!isSuper) {
+      const superAdmins = await prisma.user.findMany({
+        where: { role: 'super_admin' },
+        select: { id: true },
+      });
+      const superAdminIds = new Set(superAdmins.map((u) => u.id));
+      filteredList = list.filter((d) => !superAdminIds.has(d.userId));
+    }
+
     res.json({
-      deposits: list.map((d) => ({
+      deposits: filteredList.map((d) => ({
         id: d.id,
         userId: d.userId,
         user: d.user,
@@ -752,14 +785,31 @@ router.get('/deposits', async (req: AuthRequest, res) => {
 router.get('/withdraws', async (req: AuthRequest, res) => {
   try {
     const { status = 'pending' } = req.query;
+    const caller = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { role: true },
+    });
+    const isSuper = caller?.role === 'super_admin';
+
     const list = await prisma.withdrawRequest.findMany({
       where: status ? { status: String(status) } : {},
       orderBy: { createdAt: 'desc' },
       take: 100,
       include: { user: { select: { id: true, email: true, username: true, fullName: true } } },
     });
+
+    let filteredList = list;
+    if (!isSuper) {
+      const superAdmins = await prisma.user.findMany({
+        where: { role: 'super_admin' },
+        select: { id: true },
+      });
+      const superAdminIds = new Set(superAdmins.map((u) => u.id));
+      filteredList = list.filter((w) => !superAdminIds.has(w.userId));
+    }
+
     res.json({
-      withdraws: list.map((w) => ({
+      withdraws: filteredList.map((w) => ({
         id: w.id,
         userId: w.userId,
         user: w.user,
@@ -1089,9 +1139,16 @@ router.get('/stats', async (req: AuthRequest, res) => {
     const d = vnNow.getUTCDate();
     const today = new Date(Date.UTC(y, m, d, 0, 0, 0, 0) - 7 * 60 * 60 * 1000);
 
+    const caller = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { role: true },
+    });
+    const isSuper = caller?.role === 'super_admin';
+    const userWhere = isSuper ? {} : { role: { not: 'super_admin' } };
+
     const [userCount, transactionCount, totalDeposits, totalWithdraws, betCount, todayBets, todayPayouts, todayDeposits, todayWithdraws, betByHour, betByGame] =
       await Promise.all([
-        prisma.user.count(),
+        prisma.user.count({ where: userWhere }),
         prisma.transaction.count(),
         prisma.transaction.aggregate({ where: { type: 'deposit' }, _sum: { amount: true } }),
         prisma.transaction.aggregate({ where: { type: 'withdraw' }, _sum: { amount: true } }),

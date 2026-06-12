@@ -577,8 +577,19 @@ const gamePayoutConfig = {
 // ---- SupportTicket ---------------------------------------------------------
 const supportTicket = {
   async create({ data }) {
-    const row = { ...data, id: data.id ?? uid(), createdAt: nowIso(), updatedAt: nowIso() };
-    return await check(sb.from('SupportTicket').insert(row).select().single());
+    let payload = { ...data };
+    if (payload.isHidden !== undefined) {
+      if (payload.isHidden) {
+        payload.subject = '[HIDDEN] ' + (payload.subject || 'Support');
+      }
+      delete payload.isHidden;
+    }
+    const row = { ...payload, id: payload.id ?? uid(), createdAt: nowIso(), updatedAt: nowIso() };
+    const res = await check(sb.from('SupportTicket').insert(row).select().single());
+    
+    const isHidden = res.subject && res.subject.startsWith('[HIDDEN]');
+    const subject = isHidden ? res.subject.replace(/^\[HIDDEN\]\s*/, '') : res.subject;
+    return { ...res, isHidden, subject };
   },
   async findMany({ where, take, skip, include } = {}) {
     let sel = '*';
@@ -596,8 +607,11 @@ const supportTicket = {
     q = q.order('updatedAt', { ascending: false });
     const { data, error } = await q;
     if (error) throw new Error(error.message);
-    return (data ?? []).map((row) => {
-      const mapped = { ...row };
+    
+    let tickets = (data ?? []).map((row) => {
+      const isHidden = row.subject && row.subject.startsWith('[HIDDEN]');
+      const subject = isHidden ? row.subject.replace(/^\[HIDDEN\]\s*/, '') : row.subject;
+      const mapped = { ...row, isHidden, subject };
       if (row.User) {
         mapped.user = row.User;
         delete mapped.User;
@@ -608,6 +622,11 @@ const supportTicket = {
       }
       return mapped;
     });
+
+    if (where?.isHidden !== undefined) {
+      tickets = tickets.filter((t) => t.isHidden === where.isHidden);
+    }
+    return tickets;
   },
   async findUnique({ where, include }) {
     let sel = '*';
@@ -620,7 +639,10 @@ const supportTicket = {
     const { data, error } = await sb.from('SupportTicket').select(sel).eq('id', where.id).maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) return null;
-    const mapped = { ...data };
+    
+    const isHidden = data.subject && data.subject.startsWith('[HIDDEN]');
+    const subject = isHidden ? data.subject.replace(/^\[HIDDEN\]\s*/, '') : data.subject;
+    const mapped = { ...data, isHidden, subject };
     if (data.User) {
       mapped.user = data.User;
       delete mapped.User;
@@ -632,9 +654,34 @@ const supportTicket = {
     return mapped;
   },
   async update({ where, data }) {
-    return await check(sb.from('SupportTicket').update({ ...data, updatedAt: nowIso() }).eq('id', where.id).select().single());
+    const existing = await supportTicket.findUnique({ where });
+    if (!existing) throw new Error('Ticket not found');
+    
+    let payload = { ...data };
+    let subject = existing.subject;
+    
+    if (data.isHidden !== undefined) {
+      const currentlyHidden = existing.isHidden;
+      const targetHidden = !!data.isHidden;
+      if (targetHidden && !currentlyHidden) {
+        payload.subject = '[HIDDEN] ' + (subject || 'Support');
+      } else if (!targetHidden && currentlyHidden) {
+        payload.subject = subject || 'Support';
+      }
+      delete payload.isHidden;
+    }
+    
+    const res = await check(sb.from('SupportTicket').update({ ...payload, updatedAt: nowIso() }).eq('id', where.id).select().single());
+    
+    const isHidden = res.subject && res.subject.startsWith('[HIDDEN]');
+    const cleanSubject = isHidden ? res.subject.replace(/^\[HIDDEN\]\s*/, '') : res.subject;
+    return { ...res, isHidden, subject: cleanSubject };
   },
   async count({ where } = {}) {
+    if (where?.isHidden !== undefined) {
+      const tickets = await supportTicket.findMany({ where });
+      return tickets.length;
+    }
     let q = sb.from('SupportTicket').select('*', { count: 'exact', head: true });
     if (where?.status) q = q.eq('status', where.status);
     const { count, error } = await q;

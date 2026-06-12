@@ -44,28 +44,6 @@ app.use('/api/support', supportRoutes);
 app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok' }));
 app.get('/api/health', (_req: Request, res: Response) => res.json({ status: 'ok' }));
 
-app.get('/api/migrate-db-special-route', async (req: Request, res: Response) => {
-  try {
-    const pg = (await import('pg')).default;
-    const connectionString = "postgresql://postgres:Pdn1001199x@[2406:da18:1f7e:b101:b3ba:b588:1ca0:5f3c]:5432/postgres";
-    const client = new pg.Client({
-      connectionString,
-      ssl: { rejectUnauthorized: false }
-    });
-    await client.connect();
-    await client.query('ALTER TABLE "SupportTicket" ADD COLUMN IF NOT EXISTS "isHidden" BOOLEAN DEFAULT false;');
-    const verify = await client.query(`
-      SELECT column_name, data_type 
-      FROM information_schema.columns 
-      WHERE table_name = 'SupportTicket' AND column_name = 'isHidden';
-    `);
-    await client.end();
-    res.json({ success: true, verify: verify.rows });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // Socket.io với polling mode (Vercel serverless compatible)
 const httpServer = createServer(app);
 const { io } = initSocket(httpServer);

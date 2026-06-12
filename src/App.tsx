@@ -963,6 +963,7 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
   const [errorImg, setErrorImg] = useState<string | null>(null);
   const [faqOpen, setFaqOpen] = useState<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
   const { notices, unreadCount: noticeUnread, unreadSupportCount, markNoticesSeen, setSupportChatOpen } = usePlayerNotifications();
 
   // Keep context in sync so unread badge clears when chat is open
@@ -1033,7 +1034,7 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
       }
     })();
     return () => { active = false; };
-  }, [useApi]);
+  }, [useApi, refreshTrigger]);
 
   const { socket } = useAppSocket();
 
@@ -1115,15 +1116,21 @@ function ContactScreen({ onOpenMenu, onBack, user, useApi = false, initialChatOp
       }
     };
 
+    const ticketCreatedHandler = (payload: { ticketId: string }) => {
+      setRefreshTrigger((prev) => prev + 1);
+    };
+
     socket.on('support_message', handler);
     socket.on('support_messages_read', readHandler);
     socket.on('support_ticket_deleted', ticketDeletedHandler);
     socket.on('support_message_deleted', messageDeletedHandler);
+    socket.on('support_ticket_created', ticketCreatedHandler);
     return () => {
       socket.off('support_message', handler);
       socket.off('support_messages_read', readHandler);
       socket.off('support_ticket_deleted', ticketDeletedHandler);
       socket.off('support_message_deleted', messageDeletedHandler);
+      socket.off('support_ticket_created', ticketCreatedHandler);
     };
   }, [useApi, socket]);
 

@@ -73,7 +73,10 @@ export function SupportChatPage() {
     const actionText = currentHidden ? 'hiện' : 'ẩn';
     if (!confirm(`Bạn có chắc chắn muốn ${actionText} cuộc hội thoại này khỏi danh sách của các admin thường?`)) return;
     try {
-      await adminApi.toggleHideTicket(ticketId, !currentHidden);
+      const res = await adminApi.toggleHideTicket(ticketId, !currentHidden);
+      if (res.ticketId) {
+        setSelectedTicket(res.ticketId);
+      }
       queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
     } catch (err) {
       alert(`Lỗi khi ${actionText} cuộc hội thoại: ` + (err as Error).message);
@@ -261,17 +264,23 @@ export function SupportChatPage() {
       }
     };
 
+    const onTicketCreated = () => {
+      queryClient.invalidateQueries({ queryKey: ['support-tickets'] });
+    };
+
     socket.on('support_message', onMsg);
     socket.on('support_messages_read', onRead);
     socket.on('support_ticket_deleted', onTicketDeleted);
     socket.on('support_message_deleted', onMsgDeleted);
     socket.on('support_ticket_hidden_changed', onTicketHiddenChanged);
+    socket.on('support_ticket_created', onTicketCreated);
     return () => {
       socket.off('support_message', onMsg);
       socket.off('support_messages_read', onRead);
       socket.off('support_ticket_deleted', onTicketDeleted);
       socket.off('support_message_deleted', onMsgDeleted);
       socket.off('support_ticket_hidden_changed', onTicketHiddenChanged);
+      socket.off('support_ticket_created', onTicketCreated);
     };
   }, [socket, selectedTicket, queryClient]);
 

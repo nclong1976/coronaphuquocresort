@@ -383,19 +383,43 @@ router.post('/tickets/:ticketId/toggle-hide', authMiddleware, async (req: AuthRe
     const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
-    await prisma.supportTicket.update({
-      where: { id: ticketId },
-      data: { isHidden: !!isHidden },
-    });
+    let finalIsHidden = !!isHidden;
+    let targetTicketId = ticketId;
 
-    const io = (req as any).app?.get?.('io');
-    if (io) {
-      const payload = { ticketId, isHidden: !!isHidden };
-      io.to('admin').emit('support_ticket_hidden_changed', payload);
-      io.to('super_admin').emit('support_ticket_hidden_changed', payload);
+    if (finalIsHidden) {
+      // Create a new hidden ticket, keep the old one intact
+      const newTicket = await prisma.supportTicket.create({
+        data: {
+          userId: ticket.userId,
+          subject: ticket.subject ? `${ticket.subject} (Bí mật)` : 'Support (Bí mật)',
+          isHidden: true,
+          status: 'open',
+        },
+      });
+      targetTicketId = newTicket.id;
+
+      const io = (req as any).app?.get?.('io');
+      if (io) {
+        const payload = { ticketId: newTicket.id, userId: ticket.userId };
+        io.to(`user:${ticket.userId}`).emit('support_ticket_created', payload);
+        io.to('super_admin').emit('support_ticket_created', payload);
+      }
+    } else {
+      // Unhide the existing ticket
+      await prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: { isHidden: false },
+      });
+
+      const io = (req as any).app?.get?.('io');
+      if (io) {
+        const payload = { ticketId, isHidden: false };
+        io.to('admin').emit('support_ticket_hidden_changed', payload);
+        io.to('super_admin').emit('support_ticket_hidden_changed', payload);
+      }
     }
 
-    res.json({ success: true, isHidden: !!isHidden });
+    res.json({ success: true, isHidden: finalIsHidden, ticketId: targetTicketId });
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });
   }

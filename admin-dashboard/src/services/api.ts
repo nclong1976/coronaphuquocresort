@@ -150,7 +150,7 @@ export const adminApi = {
       method: 'DELETE',
     }),
   toggleHideTicket: (ticketId: string, isHidden: boolean) =>
-    api<{ success: boolean; isHidden: boolean }>(`/api/support/tickets/${ticketId}/toggle-hide`, {
+    api<{ success: boolean; isHidden: boolean; ticketId?: string }>(`/api/support/tickets/${ticketId}/toggle-hide`, {
       method: 'POST',
       body: JSON.stringify({ isHidden }),
     }),

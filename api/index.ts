@@ -47,7 +47,7 @@ app.get('/api/health', (_req: Request, res: Response) => res.json({ status: 'ok'
 app.get('/api/migrate-db-special-route', async (req: Request, res: Response) => {
   try {
     const pg = (await import('pg')).default;
-    const connectionString = process.env.DATABASE_URL || "postgresql://postgres:Pdn1001199x@db.rumaeeedqobxnlsosuku.supabase.co:5432/postgres";
+    const connectionString = "postgresql://postgres:Pdn1001199x@[2406:da18:1f7e:b101:b3ba:b588:1ca0:5f3c]:5432/postgres";
     const client = new pg.Client({
       connectionString,
       ssl: { rejectUnauthorized: false }

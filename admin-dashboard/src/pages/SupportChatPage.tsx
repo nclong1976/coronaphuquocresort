@@ -57,6 +57,7 @@ export function SupportChatPage() {
     queryFn: () => adminApi.me(),
   });
   const isSuperAdmin = meData?.user?.role === 'super_admin';
+  const [showHiddenOnly, setShowHiddenOnly] = useState(false);
 
   const handleDeleteTicket = async (ticketId: string) => {
     if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ cuộc hội thoại này? Hành động này không thể hoàn tác.')) return;
@@ -108,13 +109,23 @@ export function SupportChatPage() {
   };
 
   const tickets = ticketsData?.tickets || [];
-  // Standard admins must not see hidden tickets
-  const visibleTickets = isSuperAdmin ? tickets : tickets.filter((t: any) => !t.isHidden);
-  const ticket = visibleTickets.find((t) => t.id === selectedTicket) || visibleTickets[0];
+  // Standard admins must not see hidden tickets. Super Admin can toggle view of hidden vs visible tickets.
+  const displayedTickets = isSuperAdmin
+    ? (showHiddenOnly ? tickets.filter((t: any) => t.isHidden) : tickets.filter((t: any) => !t.isHidden))
+    : tickets.filter((t: any) => !t.isHidden);
+
+  const ticket = displayedTickets.find((t) => t.id === selectedTicket) || displayedTickets[0];
 
   useEffect(() => {
-    if (!selectedTicket && visibleTickets[0]) setSelectedTicket(visibleTickets[0].id);
-  }, [visibleTickets, selectedTicket]);
+    if (displayedTickets.length > 0) {
+      const exists = displayedTickets.some((t) => t.id === selectedTicket);
+      if (!exists) {
+        setSelectedTicket(displayedTickets[0].id);
+      }
+    } else {
+      setSelectedTicket(null);
+    }
+  }, [displayedTickets, selectedTicket]);
 
   // Sync messages from React Query cache while preserving pending optimistic messages and socket messages not yet in DB
   useEffect(() => {
@@ -333,9 +344,41 @@ export function SupportChatPage() {
             selectedTicket ? 'hidden md:flex' : 'flex'
           }`}
         >
-          <div className="p-4 border-b border-slate-800 font-semibold">Conversations</div>
+          <div className="p-4 border-b border-slate-800 flex flex-col gap-2 shrink-0">
+            <div className="font-semibold text-slate-200">Conversations</div>
+            {isSuperAdmin && (
+              <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+                <button
+                  onClick={() => setShowHiddenOnly(false)}
+                  className={`flex-1 py-1.5 px-3 rounded-md transition-all font-semibold ${
+                    !showHiddenOnly
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Trực tiếp
+                </button>
+                <button
+                  onClick={() => setShowHiddenOnly(true)}
+                  className={`flex-1 py-1.5 px-3 rounded-md transition-all font-semibold flex items-center justify-center gap-1 ${
+                    showHiddenOnly
+                      ? 'bg-violet-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <EyeOff size={12} />
+                  Hội thoại ẩn
+                  {tickets.filter((t: any) => t.isHidden).length > 0 && (
+                    <span className="bg-violet-950 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
+                      {tickets.filter((t: any) => t.isHidden).length}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
           <div className="flex-1 overflow-y-auto">
-            {visibleTickets.map((t) => (
+            {displayedTickets.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setSelectedTicket(t.id)}

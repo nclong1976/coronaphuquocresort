@@ -1,6 +1,7 @@
 /** Khóa lưu trong SiteContent + giá trị mặc định (trang chủ) */
 export const LANDING_CONTENT_DEFAULTS: Record<string, string> = {
   'landing.heroVideoUrl': 'https://casinocorona.vn/wp-content/uploads/2022/09/tvc-vi-en.mp4',
+    'landing.heroVideoUrl2': 'https://casinocorona.vn/wp-content/uploads/2022/09/tvc-vi-en.mp4',
   'landing.aboutKicker': 'Về chúng tôi',
   'landing.aboutTitle': 'CORONA RESORT & CASINO',
   'landing.aboutImageUrl': 'https://casinocorona.vn/wp-content/uploads/2025/07/homepage-web3-1024x768.jpg',
